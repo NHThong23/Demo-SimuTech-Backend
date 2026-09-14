@@ -209,6 +209,27 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
       if (result.stageAction === "next_stage" || result.stageAction === "end") {
         applyStageTransition({ type: "llm_next_stage" });
       }
+    } catch (err) {
+      if (controller.signal.aborted) {
+        // Interrupted while `turnRunner.run()` itself was still in flight — most commonly: the
+        // LLM call was aborted mid-flight, before TurnRunner ever produced a Turn object (see
+        // Task 9's TurnRunner contract: it re-throws rather than resolving with a graceful
+        // fallback turn ONLY in this abort case; a non-abort LLM failure resolves normally with
+        // a fallback turn instead). There is no Turn here to recordTurn/markInterrupted on, but
+        // the interruption still needs to be counted. `Session.markInterrupted` already
+        // tolerates a turnId that matches nothing in `session.turns` — it just increments
+        // `session.interruptions` without touching `session.turns` — so this reuses that
+        // existing, already-approved behavior instead of adding a new Session API for a
+        // no-turn-yet interruption.
+        session.markInterrupted("");
+      } else {
+        // TurnRunner's contract says it should not reject except on abort, but this is the
+        // top-level per-turn orchestration point for the whole session — fail safe rather than
+        // trust that contract unconditionally. Swallow it, record it as a metric, and let the
+        // session continue instead of risking an unhandled rejection (both call sites invoke
+        // runTurn via `void`, which would otherwise let this crash the whole process).
+        deps.metrics.recordError("llm");
+      }
     } finally {
       if (session.aiStatus === "thinking") session.aiStatus = "idle";
       session.currentTurnController = null;
@@ -235,6 +256,14 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
       // from the client's speech.start handler) the in-flight turn has not been recorded into
       // session.turns yet — that happens later, after `turnRunner.run(...)` resolves back in
       // runTurn — so `.at(-1)` would point at a stale/unrelated turn or be undefined.
+      //
+      // `inFlightTurnId` is still `null` here (and utteranceId below is sent as "") when the
+      // interrupt lands while the AI is still "thinking" — i.e. the LLM call inside
+      // turnRunner.run() hasn't resolved yet, so no turnId has ever been minted for this turn.
+      // This is intentional: the client still needs SOME signal that the pending/thinking turn
+      // was cancelled (so it can stop showing a "thinking" indicator, re-enable input, etc.),
+      // even though there is no specific utterance to name — an empty utteranceId communicates
+      // "whatever was pending is now cancelled" rather than silently sending nothing.
       send({ type: "ai.speech.cancelled", data: { utteranceId: inFlightTurnId ?? "" } });
       session.aiStatus = "listening";
     },

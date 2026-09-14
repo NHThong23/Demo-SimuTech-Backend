@@ -7,6 +7,7 @@ import type { InterviewRepository } from "../persistence/interview-repository";
 import { MetricsCollector } from "../metrics/metrics";
 import { SystemClock, type Clock } from "../session/clock";
 import { FakeLlmAgent, FakeSttAgent, FakeTtsAgent, FakeCodeExecutor } from "../agents/fakes";
+import type { ChatMessage, LlmAgent } from "../agents/types";
 import type { Problem } from "../domain/types";
 
 const PROBLEM: Problem = {
@@ -65,7 +66,7 @@ describe("WsGateway", () => {
     for (const s of servers) s.close();
   });
 
-  function makeDeps(overrides: Partial<{ llm: FakeLlmAgent; clock: Clock }> = {}): WsGatewayDeps {
+  function makeDeps(overrides: Partial<{ llm: LlmAgent; clock: Clock }> = {}): WsGatewayDeps {
     return {
       sessionManager,
       interviewRepository: noopRepo(),
@@ -262,5 +263,78 @@ describe("WsGateway", () => {
     expect(session.turns[0]?.interrupted).toBe(false);
 
     ws.close();
+  });
+
+  it("ngắt lời khi LLM đang 'suy nghĩ' (chưa kịp trả lời) không gây unhandled rejection", async () => {
+    // Fake LLM có thể điều khiển được: chat() KHÔNG BAO GIỜ tự resolve — nó chỉ reject khi
+    // AbortSignal truyền vào bị abort (đúng như một client HTTP/gRPC thật sẽ làm khi request bị
+    // hủy giữa chừng). Điều này tạo ra đúng cửa sổ thời gian mà FakeLlmAgent thường dùng (resolve
+    // ngay lập tức) không bao giờ tạo ra được: interrupt đến trong lúc turnRunner.run() còn đang
+    // chờ llm.chat(), TRƯỚC KHI TurnRunner kịp tạo ra Turn hay gọi onAiSpeechStart.
+    class DeferredLlmAgent implements LlmAgent {
+      async chat(_messages: ChatMessage[], opts: { signal: AbortSignal; maxTokens: number; json: boolean }): Promise<string> {
+        return new Promise((_resolve, reject) => {
+          const onAbort = () => reject(new Error("aborted mid-thinking"));
+          if (opts.signal.aborted) {
+            onAbort();
+            return;
+          }
+          opts.signal.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+    }
+
+    // Bắt trực tiếp unhandled rejection: nếu bug còn tồn tại (runTurn không catch rejection của
+    // turnRunner.run() khi bị abort giữa lúc "thinking"), Node sẽ phát sự kiện này vì cả hai nơi
+    // gọi runTurn (onTrigger và nhánh flushPending trong finally) đều dùng `void runTurn(...)`,
+    // không có handler nào bắt promise bị discard đó.
+    const unhandledReasons: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandledReasons.push(reason);
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      const llm = new DeferredLlmAgent();
+      const deps = makeDeps({ llm });
+      const { wss, port } = await startServer(deps);
+      servers.push(wss);
+      const session = sessionManager.create({
+        sessionId: "s11", tokenHash: hashToken("tok"), problem: PROBLEM, language: "python", clock: deps.clock,
+      });
+
+      const ws = new WebSocket(`ws://localhost:${port}/ws/session/s11?token=tok`);
+      await new Promise((resolve) => ws.once("open", resolve));
+
+      // Lượt stage_enter khởi động ngay khi kết nối và hiện đang kẹt ở "thinking" mãi mãi (chat()
+      // của DeferredLlmAgent không tự resolve). Ngắt lời nó TRƯỚC KHI nó có cơ hội bắt đầu nói.
+      const cancelledPromise = waitForType(ws, "ai.speech.cancelled");
+      ws.send(JSON.stringify({ type: "speech.start" }));
+      const cancelled = await cancelledPromise;
+      // Chưa từng có turnId nào được cấp phát cho lượt này (TurnRunner chưa kịp trả lời) — gửi
+      // utteranceId rỗng là hành vi có chủ đích, xem chú thích tại onInterrupt trong ws-gateway.ts.
+      expect(cancelled.data.utteranceId).toBe("");
+
+      // Đợi promise bị abort của turnRunner.run() settle (reject) và runTurn's catch/finally chạy
+      // xong. Nếu bug còn tồn tại, unhandledRejection sẽ được Node phát ra đâu đó trong lúc này.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(session.aiStatus).toBe("listening");
+      expect(session.currentTurnController).toBeNull();
+      expect(session.interruptions).toBeGreaterThanOrEqual(1);
+      // Không có Turn nào được tạo ra cho lượt bị ngắt lúc còn đang "thinking".
+      expect(session.turns.length).toBe(0);
+
+      // Gateway vẫn hoạt động bình thường sau đó (busy đã được reset đúng, không bị kẹt) — một
+      // thông điệp code.run mới vẫn được xử lý và trả lời ngay.
+      const resultPromise = waitForType(ws, "code.result");
+      ws.send(JSON.stringify({ type: "code.run" }));
+      const resultMsg = await resultPromise;
+      expect(resultMsg.data.mode).toBe("sample");
+
+      ws.close();
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+
+    expect(unhandledReasons).toEqual([]);
   });
 });
