@@ -28,14 +28,44 @@ const createProblemSchema = z.object({
   supported_languages: z.array(z.string()).optional(),
 });
 
+import { NextResponse } from 'next/server';
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const category = searchParams.get('category') || undefined;
-    const difficulty = (searchParams.get('difficulty') as ProblemDifficulty) || undefined;
+    const rawDifficulty = searchParams.get('difficulty');
+    const difficulty = rawDifficulty ? (rawDifficulty.toUpperCase() as ProblemDifficulty) : undefined;
+    const search = searchParams.get('search')?.toLowerCase();
 
-    const problems = await problemService.listProblems(category, difficulty);
-    return apiSuccess(problems, 200, { count: problems.length });
+    let problems = await problemService.listProblems(category, difficulty);
+
+    if (search) {
+      problems = problems.filter(
+        (p) =>
+          p.title.toLowerCase().includes(search) ||
+          p.category.toLowerCase().includes(search) ||
+          p.tags.some((t) => t.toLowerCase().includes(search))
+      );
+    }
+
+    const items = problems.map((p) => ({
+      id: p.problem_id,
+      slug: p.problem_id,
+      title: p.title,
+      difficulty: p.difficulty.toLowerCase() as 'easy' | 'medium' | 'hard',
+      category: p.category,
+      acceptanceRatePct: p.interview_frequency || 85,
+      isCompleted: false,
+    }));
+
+    return NextResponse.json({
+      success: true,
+      items,
+      total: items.length,
+      data: problems,
+      meta: { count: problems.length },
+    });
   } catch (err: any) {
     return apiError(err.message || 'Failed to fetch problems', 500, 'FETCH_FAILED');
   }
