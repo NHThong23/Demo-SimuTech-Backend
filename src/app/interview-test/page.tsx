@@ -23,6 +23,7 @@ export default function InterviewTestPage() {
   const playTimeRef = useRef<number>(0);
   const streamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const recordingCtxRef = useRef<AudioContext | null>(null);
 
   function appendLog(line: string): void {
     setLog((prev) => [...prev, line]);
@@ -111,6 +112,7 @@ export default function InterviewTestPage() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
     streamRef.current = stream;
     const ctx = new AudioContext({ sampleRate: 16000 });
+    recordingCtxRef.current = ctx;
     const source = ctx.createMediaStreamSource(stream);
     const processor = ctx.createScriptProcessor(4096, 1, 1);
     processor.onaudioprocess = (e) => {
@@ -130,6 +132,8 @@ export default function InterviewTestPage() {
   function stopRecording(): void {
     processorRef.current?.disconnect();
     streamRef.current?.getTracks().forEach((t) => t.stop());
+    void recordingCtxRef.current?.close();
+    recordingCtxRef.current = null;
     wsRef.current?.send(JSON.stringify({ type: "speech.end" }));
   }
 
