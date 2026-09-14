@@ -155,7 +155,7 @@ export class Session {
       lastCodeRun: lastCodeRun
         ? {
             ...lastCodeRun,
-            tests: [...lastCodeRun.tests],
+            tests: lastCodeRun.tests ? [...lastCodeRun.tests] : undefined,
           }
         : null,
       hiddenTestsPassed: this.hiddenTestsPassed,

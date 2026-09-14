@@ -41,7 +41,7 @@ describe("buildPrompt", () => {
     const messages = buildPrompt(snapshot({ revealedConstraints: [0] }), "utterance", {
       kind: "utterance", transcript: "còn gì nữa không?",
     });
-    expect(messages[0].content).toMatch(/\[đã tiết lộ\].*Mảng có thể có số âm/s);
+    expect(messages[0].content).toMatch(/\[đã tiết lộ\][\s\S]*Mảng có thể có số âm/);
   });
 
   it("user message chứa transcript khi trigger là utterance", () => {
