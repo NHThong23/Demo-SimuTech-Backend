@@ -49,7 +49,7 @@ ENDPOINT_URL="http://localhost:8000" AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_K
 cd infra/judge0 && cp judge0.conf.example judge0.conf && docker compose up -d && cd ../..
 
 npm test           # toàn bộ unit + integration test
-npm run dev        # chạy server tại http://localhost:3000
+DDB_ENDPOINT="http://localhost:8000" AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local npm run dev   # chạy server tại http://localhost:3000
 npm run simulate   # mô phỏng một buổi phỏng vấn qua server đang chạy
 ```
 
