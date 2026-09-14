@@ -60,13 +60,27 @@ describe("EventRouter — silence", () => {
 
 describe("EventRouter — time warning", () => {
   it("phát time_warning đúng 1 lần khi qua 80% maxSec", () => {
-    const { router, clock, onTrigger } = makeRouter({ stageMaxSec: 100, stageElapsedSec: 0 });
+    const clock = new FakeClock();
+    const onTrigger = vi.fn();
+    const stageEnteredAtMs = clock.now();
+    const router = new EventRouter({
+      clock,
+      getSilenceThresholdSec: () => 10,
+      getStageElapsedSec: () => Math.floor((clock.now() - stageEnteredAtMs) / 1000),
+      getStageMaxSec: () => 100,
+      isBusy: () => false,
+      onTrigger,
+      onInterrupt: vi.fn(),
+      onStagePrecondition: vi.fn(),
+      canDoneStage: () => ({ ok: true }),
+      tickIntervalMs: 5000,
+    });
     router.onStageEntered();
     onTrigger.mockClear();
-    // giả lập elapsedSec tăng dần qua các lần tick bằng cách advance nhiều lần 5s
+    // Advance clock to pass 80% threshold (100s * 0.8 = 80s)
     for (let i = 0; i < 20; i++) clock.advance(5000);
     const warningCalls = onTrigger.mock.calls.filter((c) => c[0] === "time_warning");
-    expect(warningCalls.length).toBeLessThanOrEqual(1);
+    expect(warningCalls.length).toBe(1);
   });
 });
 

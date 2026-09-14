@@ -113,8 +113,8 @@ export class EventRouter {
   }
 
   handleSpeechEnd(transcript: string): void {
-    this.recordActivity();
     if (!transcript) return;
+    this.recordActivity();
     this.emit({ kind: "utterance", transcript });
   }
 
