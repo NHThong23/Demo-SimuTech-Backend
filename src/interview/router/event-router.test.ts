@@ -56,6 +56,21 @@ describe("EventRouter — silence", () => {
     clock.advance(1000);
     expect(onTrigger).toHaveBeenCalledWith("silence", { kind: "silence" });
   });
+
+  it("speech.start reset bộ đếm im lặng (I8: trước đây chỉ gọi onInterrupt khi busy, không reset timer)", () => {
+    const { router, clock, onTrigger } = makeRouter({ silenceThresholdSec: 10, isBusy: false });
+    router.onStageEntered();
+    clock.advance(9000);
+    router.handleSpeechStart(); // candidate bắt đầu nói — phải reset bộ đếm, dù AI không bận
+    onTrigger.mockClear();
+    clock.advance(9000);
+    // Nếu speech.start không reset timer, ngưỡng gốc (10s kể từ onStageEntered) đã bị vượt qua ở
+    // mốc 9000+9000=18000ms từ lúc entered stage, và silence đã sớm bắn ra trước khi advance tới
+    // đây. Vì đã reset ở mốc 9000ms, silence chỉ được phép bắn sau mốc 9000+10000=19000ms.
+    expect(onTrigger).not.toHaveBeenCalledWith("silence", expect.anything());
+    clock.advance(1000);
+    expect(onTrigger).toHaveBeenCalledWith("silence", { kind: "silence" });
+  });
 });
 
 describe("EventRouter — time warning", () => {

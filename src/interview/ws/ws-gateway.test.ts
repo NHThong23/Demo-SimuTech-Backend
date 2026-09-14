@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { WebSocketServer, WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { attachWsGateway, hashToken, type WsGatewayDeps } from "./ws-gateway";
 import { SessionManager } from "../session/session-manager";
 import type { InterviewRepository } from "../persistence/interview-repository";
 import { MetricsCollector } from "../metrics/metrics";
-import { SystemClock, type Clock } from "../session/clock";
+import { SystemClock, FakeClock, type Clock } from "../session/clock";
 import { FakeLlmAgent, FakeSttAgent, FakeTtsAgent, FakeCodeExecutor } from "../agents/fakes";
 import type { ChatMessage, LlmAgent } from "../agents/types";
 import type { Problem } from "../domain/types";
@@ -21,6 +21,19 @@ function noopRepo(): InterviewRepository {
     putCodeSnapshot: async () => {}, putRun: async () => {}, putBoard: async () => {}, putEvaluation: async () => {},
     getSessionReport: async () => ({ meta: null, turns: [], codeRuns: [], boards: [], evaluation: null }),
   } as unknown as InterviewRepository;
+}
+
+/** Like noopRepo(), but putEvaluation/updateMeta are spies so tests can assert on what the
+ * gateway persisted (e.g. that an abandoned session was written with status "abandoned"). */
+function spyRepo() {
+  const putEvaluation = vi.fn(async () => {});
+  const updateMeta = vi.fn(async () => {});
+  const repo = {
+    createMeta: async () => {}, updateMeta, putTurn: async () => {},
+    putCodeSnapshot: async () => {}, putRun: async () => {}, putBoard: async () => {}, putEvaluation,
+    getSessionReport: async () => ({ meta: null, turns: [], codeRuns: [], boards: [], evaluation: null }),
+  } as unknown as InterviewRepository;
+  return { repo, putEvaluation, updateMeta };
 }
 
 async function startServer(deps: WsGatewayDeps) {
@@ -66,10 +79,10 @@ describe("WsGateway", () => {
     for (const s of servers) s.close();
   });
 
-  function makeDeps(overrides: Partial<{ llm: LlmAgent; clock: Clock }> = {}): WsGatewayDeps {
+  function makeDeps(overrides: Partial<{ llm: LlmAgent; clock: Clock; interviewRepository: InterviewRepository }> = {}): WsGatewayDeps {
     return {
       sessionManager,
-      interviewRepository: noopRepo(),
+      interviewRepository: overrides.interviewRepository ?? noopRepo(),
       metrics: new MetricsCollector(),
       clock: overrides.clock ?? new SystemClock(),
       agents: {
@@ -336,5 +349,104 @@ describe("WsGateway", () => {
     }
 
     expect(unhandledReasons).toEqual([]);
+  });
+
+  it("session.end ở chặng giữa (chưa hội đủ điều kiện qua chặng) buộc phiên kết thúc ngay và trả session.evaluation (C1)", async () => {
+    // Trước khi sửa: case "session.end" gọi applyStageTransition({ type: "stage_done_button" }) —
+    // hệt như "stage.done". Ở chặng 3, "stage_done_button" đòi hỏi đã chạy code ít nhất 1 lần;
+    // chưa chạy lần nào thì bị `rejected` và `applyStageTransition` lặng lẽ return (bug mô tả
+    // trong C1 — result.rejected bị bỏ qua), tức là session.end ở chặng 3 CHƯA CHẠY CODE từng là
+    // một no-op hoàn toàn: không kết thúc, không báo lỗi gì cho client. Test này xác nhận hành vi
+    // đúng: session.end LUÔN buộc kết thúc phiên tại chỗ, bỏ qua hoàn toàn state machine/điều
+    // kiện tiên quyết của chặng.
+    const deps = makeDeps();
+    const { wss, port } = await startServer(deps);
+    servers.push(wss);
+    const session = sessionManager.create({
+      sessionId: "s-end1", tokenHash: hashToken("tok"), problem: PROBLEM, language: "python", clock: deps.clock,
+    });
+    session.currentStage = 3; // chưa chạy code.run lần nào ở chặng này
+
+    const ws = new WebSocket(`ws://localhost:${port}/ws/session/s-end1?token=tok`);
+    // Đợi lượt mở đầu (stage_enter) nói xong để tránh đua với runTurn đang chạy dở.
+    await waitForType(ws, "ai.speech.end");
+
+    const evalPromise = waitForType(ws, "session.evaluation");
+    ws.send(JSON.stringify({ type: "session.end" }));
+    const evalMsg = await evalPromise;
+
+    expect(evalMsg.type).toBe("session.evaluation");
+    expect(session.status).toBe("completed");
+    // Kết thúc TẠI CHỖ — không chỉ "tiến thêm 1 chặng" như hành vi lỗi cũ.
+    expect(session.currentStage).toBe(3);
+
+    ws.close();
+  });
+
+  it("kết nối đóng rồi hết thời gian ân hạn không có kết nối lại: phiên bị đánh dấu abandoned, vẫn tạo bản nhận xét, và được giải phóng khỏi SessionManager (C2a)", async () => {
+    const clock = new FakeClock();
+    const { repo, putEvaluation, updateMeta } = spyRepo();
+    const deps = makeDeps({ clock, interviewRepository: repo });
+    const { wss, port } = await startServer(deps);
+    servers.push(wss);
+    sessionManager.create({
+      sessionId: "s-abandon1", tokenHash: hashToken("tok"), problem: PROBLEM, language: "python", clock: deps.clock,
+    });
+
+    const ws = new WebSocket(`ws://localhost:${port}/ws/session/s-abandon1?token=tok`);
+    await new Promise((resolve) => ws.once("open", resolve));
+
+    ws.close();
+    await new Promise((resolve) => ws.once("close", resolve));
+    // Cho vòng lặp sự kiện thực chạy để handler `ws.on("close", ...)` phía server thực thi (đóng
+    // socket thực là bất đồng bộ, không phụ thuộc FakeClock).
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // Tua đồng hồ (giả) đúng hết thời gian ân hạn — không có kết nối lại nào xảy ra.
+    clock.advance(30_000);
+    // finishSession("abandoned") được khởi chạy (void) bên trong callback của timer vừa fire;
+    // đợi vài lượt microtask/thực để chuỗi await bên trong nó chạy xong.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(sessionManager.get("s-abandon1")).toBeUndefined();
+    expect(updateMeta).toHaveBeenCalledWith("s-abandon1", expect.objectContaining({ status: "abandoned" }));
+    expect(putEvaluation).toHaveBeenCalled();
+  });
+
+  it("kết nối lại trước khi hết thời gian ân hạn: phiên KHÔNG bị abandon, timer chờ bị hủy (C2b)", async () => {
+    const clock = new FakeClock();
+    const { repo, putEvaluation, updateMeta } = spyRepo();
+    const deps = makeDeps({ clock, interviewRepository: repo });
+    const { wss, port } = await startServer(deps);
+    servers.push(wss);
+    sessionManager.create({
+      sessionId: "s-reconnect1", tokenHash: hashToken("tok"), problem: PROBLEM, language: "python", clock: deps.clock,
+    });
+
+    const ws1 = new WebSocket(`ws://localhost:${port}/ws/session/s-reconnect1?token=tok`);
+    await new Promise((resolve) => ws1.once("open", resolve));
+    ws1.close();
+    await new Promise((resolve) => ws1.once("close", resolve));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // Kết nối lại TRƯỚC khi hết thời gian ân hạn — phải hủy timer chờ abandon đang chờ.
+    const ws2 = new WebSocket(`ws://localhost:${port}/ws/session/s-reconnect1?token=tok`);
+    await new Promise((resolve) => ws2.once("open", resolve));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(sessionManager.get("s-reconnect1")).toBeDefined();
+    expect(sessionManager.get("s-reconnect1")?.status).toBe("active");
+
+    // Tua đồng hồ (giả) vượt xa thời gian ân hạn ban đầu — vì timer đã bị hủy bởi lần kết nối
+    // lại, việc này KHÔNG được đánh dấu phiên là abandoned hay xóa khỏi SessionManager.
+    clock.advance(60_000);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(sessionManager.get("s-reconnect1")).toBeDefined();
+    expect(sessionManager.get("s-reconnect1")?.status).toBe("active");
+    expect(updateMeta).not.toHaveBeenCalledWith("s-reconnect1", expect.objectContaining({ status: "abandoned" }));
+    expect(putEvaluation).not.toHaveBeenCalled();
+
+    ws2.close();
   });
 });

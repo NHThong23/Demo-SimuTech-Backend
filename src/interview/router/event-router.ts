@@ -106,6 +106,7 @@ export class EventRouter {
   }
 
   handleSpeechStart(): void {
+    this.recordActivity();
     if (this.opts.isBusy()) {
       this.opts.onInterrupt();
       this.pendingTriggers = [];

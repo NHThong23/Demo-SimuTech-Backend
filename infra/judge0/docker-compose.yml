@@ -4,7 +4,7 @@ services:
     volumes:
       - ./judge0.conf:/judge0.conf:ro
     ports:
-      - "2358:2358"
+      - "127.0.0.1:2358:2358"
     privileged: true
     env_file: judge0.conf
     restart: always

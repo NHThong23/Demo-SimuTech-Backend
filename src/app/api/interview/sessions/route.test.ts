@@ -99,4 +99,28 @@ describe("POST /api/interview/sessions", () => {
     const res = await POST(jsonRequest({ problemId: "prob_1" }));
     expect(res.status).toBe(400);
   });
+
+  it("createMeta lỗi (DynamoDB) không để lại slot đồng thời bị kẹt: session bị remove khỏi SessionManager và trả 500 (I12)", async () => {
+    const sessionManager = new SessionManager({ maxConcurrent: 1 });
+    const failingRepo: InterviewRepository = {
+      createMeta: async () => {
+        throw new Error("DynamoDB hiccup");
+      },
+      updateMeta: async () => {},
+    } as unknown as InterviewRepository;
+    setInterviewRuntimeForTest(buildRuntime({ sessionManager, interviewRepository: failingRepo }));
+
+    const res = await POST(jsonRequest({ problemId: "prob_1", language: "python" }));
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBeTruthy();
+
+    // The slot must be free again — a session count at maxConcurrent (1) before this call means
+    // a stranded "active" session would make the next request fail with 429.
+    const res2 = await POST(jsonRequest({ problemId: "prob_1", language: "python" }));
+    // Second call still uses the failing repo, so it also fails persistence — the point of this
+    // assertion is specifically that it fails with 500 (slot was available to attempt), not 429
+    // (slot permanently stranded).
+    expect(res2.status).toBe(500);
+  });
 });

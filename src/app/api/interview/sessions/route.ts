@@ -61,18 +61,27 @@ export async function POST(request: Request): Promise<Response> {
     throw err;
   }
 
-  await runtime.interviewRepository.createMeta({
-    session_id: sessionId,
-    sk: "META",
-    problem_id: problem.problem_id,
-    language: session.language,
-    user_id: parsed.data.userId,
-    token_hash: session.tokenHash,
-    status: "active",
-    current_stage: 1,
-    started_at: new Date().toISOString(),
-    model_versions: { qwen: "fake", stt: "fake", tts: "fake" },
-  });
+  try {
+    await runtime.interviewRepository.createMeta({
+      session_id: sessionId,
+      sk: "META",
+      problem_id: problem.problem_id,
+      language: session.language,
+      user_id: parsed.data.userId,
+      token_hash: session.tokenHash,
+      status: "active",
+      current_stage: 1,
+      started_at: new Date().toISOString(),
+      model_versions: { qwen: "fake", stt: "fake", tts: "fake" },
+    });
+  } catch (err) {
+    // createMeta runs AFTER sessionManager.create(...) already registered the session as
+    // "active" — if persistence fails here, the session must not be left stranded occupying a
+    // concurrency slot forever. Release it before returning the error.
+    runtime.sessionManager.remove(sessionId);
+    runtime.metrics.recordError("persistence");
+    return Response.json({ code: "PERSISTENCE_FAILED", message: "Không thể lưu phiên phỏng vấn" }, { status: 500 });
+  }
 
   return Response.json(
     {

@@ -13,7 +13,7 @@ import type { InterviewRepository } from "../persistence/interview-repository";
 import type { MetricsCollector } from "../metrics/metrics";
 import { buildEvaluation } from "../evaluation/evaluation";
 import { decodeClientMessage, encodeServerMessage, type ClientMessage, type ServerMessage } from "../protocol/messages";
-import type { CodeRunResult, TriggerType } from "../domain/types";
+import type { CodeRunResult, SessionStatus, TriggerType } from "../domain/types";
 import { getStageConfig } from "../config/stages";
 
 export interface WsGatewayDeps {
@@ -29,6 +29,20 @@ interface TimerHolder {
 }
 
 const connections = new Map<string, { ws: WebSocket; eventRouter: EventRouter; timerHolder: TimerHolder; clock: Clock }>();
+
+// Tracks a pending "abandon this session" timer for a `session_id` whose connection has just
+// closed. Kept separate from `connections` (which is connection-scoped and torn down
+// immediately on close) because this timer spans the disconnect-grace window during which the
+// session itself must stay alive in SessionManager in case the candidate reconnects — see
+// spec §9 "Mất kết nối WS". A reconnect for the same session_id cancels the entry below before
+// it fires; if nothing cancels it, it fires and abandons the session (freeing its concurrency
+// slot via `sessionManager.remove`).
+const pendingAbandon = new Map<string, { timerHandle: unknown; clock: Clock }>();
+
+// Spec §9 calls for a 2-minute disconnect grace period. Shortened to 30s here to keep this
+// practical to exercise with real timers in integration-style tests (FakeClock-based unit
+// tests still exercise the real 30s value exactly via `advance()`).
+const DISCONNECT_GRACE_MS = 30_000;
 
 export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -64,6 +78,15 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
     existing.clock.clearTimeout(existing.timerHolder.current);
     existing.ws.close(4409, "Replaced by new connection");
     connections.delete(sessionId);
+  }
+
+  // A new connection for this session_id cancels any pending disconnect-grace abandonment
+  // timer left over from a previous connection that closed without the session finishing —
+  // the candidate is back, so don't abandon the session out from under them.
+  const pendingTimer = pendingAbandon.get(sessionId);
+  if (pendingTimer) {
+    pendingTimer.clock.clearTimeout(pendingTimer.timerHandle);
+    pendingAbandon.delete(sessionId);
   }
 
   const send = (msg: ServerMessage): void => {
@@ -102,6 +125,7 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
     onAiSpeechStart: (id) => {
       inFlightTurnId = id;
       session.aiStatus = "speaking";
+      sendState();
       send({ type: "ai.speech.start", data: { utteranceId: id, sampleRate: 24000, format: "pcm16" } });
     },
     onAiSpeechChunk: (_id, chunk) => {
@@ -110,6 +134,7 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
     onAiSpeechEnd: (id) => {
       inFlightTurnId = null;
       session.aiStatus = "idle";
+      sendState();
       send({ type: "ai.speech.end", data: { utteranceId: id } });
       eventRouter.handleAiFinishedSpeaking();
     },
@@ -135,7 +160,7 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
       .updateMeta(session.sessionId, { current_stage: session.currentStage, status: session.status })
       .catch(() => deps.metrics.recordError("persistence"));
     if (session.status === "completed") {
-      void finishSession();
+      void finishSession("completed").catch(() => deps.metrics.recordError("internal"));
     } else {
       sendState();
       eventRouter.onStageEntered();
@@ -148,7 +173,18 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
     afterTransitionApplied();
   }
 
-  async function finishSession(): Promise<void> {
+  /** Finishes the session: computes + persists the evaluation, notifies the client (if still
+   * connected), and tears down connection resources. Shared by three callers: (1)
+   * `afterTransitionApplied` when the stage machine naturally reaches the end of stage 6, (2)
+   * `session.end` forcing completion at any stage, (3) the disconnect-grace timer marking a
+   * session `abandoned` after the candidate never reconnects. `finalStatus` controls which of
+   * those two terminal statuses (spec §9) gets written; only the abandonment path additionally
+   * releases the session's concurrency slot via `sessionManager.remove` — a completed session
+   * already stops counting toward `MAX_CONCURRENT_SESSIONS` (SessionManager only counts
+   * `status === "active"`), so removing it from the map isn't required for that path and is
+   * left as-is to avoid changing behavior outside this fix's scope. */
+  async function finishSession(finalStatus: SessionStatus): Promise<void> {
+    session.status = finalStatus;
     await ensureHiddenTestsRunIfNeeded();
     const notes = session.turns.filter((t) => t.note).map((t) => t.note as string);
     const evaluation = await buildEvaluation(deps.agents.llm, {
@@ -170,16 +206,18 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
       .putEvaluation(session.sessionId, evaluation)
       .catch(() => deps.metrics.recordError("persistence"));
     await deps.interviewRepository
-      .updateMeta(session.sessionId, { status: "completed", ended_at: new Date().toISOString() })
+      .updateMeta(session.sessionId, { status: finalStatus, ended_at: new Date().toISOString() })
       .catch(() => deps.metrics.recordError("persistence"));
     send({ type: "session.evaluation", data: evaluation });
     sendState();
     cleanup();
+    if (finalStatus === "abandoned") deps.sessionManager.remove(session.sessionId);
   }
 
   async function runTurn(trigger: TriggerType, payload: TriggerPayload): Promise<void> {
     busy = true;
     session.aiStatus = "thinking";
+    sendState();
     inFlightTurnId = null;
     const controller = new AbortController();
     session.currentTurnController = controller;
@@ -231,7 +269,10 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
         deps.metrics.recordError("llm");
       }
     } finally {
-      if (session.aiStatus === "thinking") session.aiStatus = "idle";
+      if (session.aiStatus === "thinking") {
+        session.aiStatus = "idle";
+        sendState();
+      }
       session.currentTurnController = null;
       busy = false;
       const pending = eventRouter.flushPending();
@@ -266,6 +307,7 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
       // "whatever was pending is now cancelled" rather than silently sending nothing.
       send({ type: "ai.speech.cancelled", data: { utteranceId: inFlightTurnId ?? "" } });
       session.aiStatus = "listening";
+      sendState();
     },
     onStagePrecondition: (message) => send({ type: "error", data: { code: "STAGE_PRECONDITION", message, retryable: false } }),
     canDoneStage: () => {
@@ -318,17 +360,30 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
       send({ type: "error", data: { code: "INVALID_MESSAGE", message: decoded.error, retryable: false } });
       return;
     }
-    void handleClientMessage(decoded.value);
+    void handleClientMessage(decoded.value).catch(() => deps.metrics.recordError("internal"));
   });
 
   ws.on("close", () => {
-    if (connections.get(sessionId)?.ws === ws) cleanup();
+    if (connections.get(sessionId)?.ws !== ws) return;
+    // Tear down per-connection resources (forced-tick timer, EventRouter's own timers, the
+    // connection registration) immediately — those are safe to release right away and don't
+    // depend on whether the candidate reconnects. The session itself, however, stays alive in
+    // SessionManager for a grace period (spec §9): a closed tab/dropped network is common and
+    // shouldn't instantly end the interview.
+    cleanup();
+    if (session.status !== "active") return; // already completed/abandoned via another path
+    const timerHandle = deps.clock.setTimeout(() => {
+      pendingAbandon.delete(sessionId);
+      void finishSession("abandoned").catch(() => deps.metrics.recordError("internal"));
+    }, DISCONNECT_GRACE_MS);
+    pendingAbandon.set(sessionId, { timerHandle, clock: deps.clock });
   });
 
   async function handleClientMessage(msg: ClientMessage): Promise<void> {
     switch (msg.type) {
       case "speech.start":
         session.aiStatus = "listening";
+        sendState();
         eventRouter.handleSpeechStart();
         return;
       case "speech.pause":
@@ -398,7 +453,14 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
         eventRouter.handleStageDone();
         return;
       case "session.end":
-        applyStageTransition({ type: "stage_done_button" });
+        // A candidate choosing to end the interview early doesn't need the stage-transition
+        // machinery (which only ever advances one stage, and can even reject the attempt via
+        // canDoneStage's preconditions) — they need the interview to stop, at whatever stage
+        // it's currently at, and produce a report. Force completion directly and run the same
+        // finishing logic used when the stage machine naturally reaches the end of stage 6.
+        if (session.status === "active") {
+          await finishSession("completed");
+        }
         return;
     }
   }

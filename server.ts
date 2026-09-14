@@ -26,19 +26,28 @@ app.prepare().then(() => {
     }
     if (url.pathname.startsWith("/ws/session/")) {
       wss.handleUpgrade(req, socket, head, (ws) => {
-        const runtime = getInterviewRuntime();
-        attachWsGateway(ws, url, {
-          sessionManager: runtime.sessionManager,
-          interviewRepository: runtime.interviewRepository,
-          metrics: runtime.metrics,
-          clock: runtime.clock,
-          agents: {
-            llm: runtime.agents.llm,
-            stt: runtime.agents.stt,
-            tts: runtime.agents.tts,
-            codeExecutor: runtime.agents.codeExecutor,
-          },
-        });
+        try {
+          const runtime = getInterviewRuntime();
+          attachWsGateway(ws, url, {
+            sessionManager: runtime.sessionManager,
+            interviewRepository: runtime.interviewRepository,
+            metrics: runtime.metrics,
+            clock: runtime.clock,
+            agents: {
+              llm: runtime.agents.llm,
+              stt: runtime.agents.stt,
+              tts: runtime.agents.tts,
+              codeExecutor: runtime.agents.codeExecutor,
+            },
+          });
+        } catch (err) {
+          // A synchronous throw here (e.g. getInterviewRuntime() failing to construct its
+          // DynamoDB client on first call) is an uncaught exception in this callback context,
+          // not a failed connection — left unguarded it crashes the whole process. Close the
+          // socket instead and keep the server alive.
+          console.error("Failed to attach WS gateway:", err);
+          ws.close(1011, "Internal error");
+        }
       });
     } else if (dev) {
       app.getUpgradeHandler()(req, socket, head);
