@@ -103,6 +103,9 @@ export class Session {
   }
 
   attemptTransition(event: StageMachineEvent): StageMachineResult {
+    if (this.status !== "active") {
+      return { transitioned: false, forced: false, timeWarning: false, nextStage: null };
+    }
     const result = evaluateStageEvent(
       {
         currentStage: this.currentStage,
@@ -129,18 +132,32 @@ export class Session {
   }
 
   toSnapshot(): SessionSnapshot {
+    const latestBoard = this.latestBoardByStage[this.currentStage];
+    const lastCodeRun = this.codeRuns.at(-1);
+
     return {
       problem: this.problem,
       language: this.language,
       currentStage: this.currentStage,
       stageElapsedSec: this.stageElapsedSec,
       stageConfig: getStageConfig(this.currentStage),
-      recentTurns: this.recentTurns,
+      recentTurns: this.recentTurns.map((turn) => ({ ...turn })),
       latestCode: this.latestCode,
-      latestBoard: this.latestBoardByStage[this.currentStage] ?? null,
+      latestBoard: latestBoard
+        ? {
+            ...latestBoard,
+            nodes: [...latestBoard.nodes],
+            edges: [...latestBoard.edges],
+          }
+        : null,
       revealedConstraints: [...this.revealedConstraints],
       coveredTopics: [...this.coveredTopics],
-      lastCodeRun: this.codeRuns.at(-1) ?? null,
+      lastCodeRun: lastCodeRun
+        ? {
+            ...lastCodeRun,
+            tests: [...lastCodeRun.tests],
+          }
+        : null,
       hiddenTestsPassed: this.hiddenTestsPassed,
       hiddenTestsTotal: this.hiddenTestsTotal,
     };
