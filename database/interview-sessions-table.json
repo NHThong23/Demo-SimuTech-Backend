@@ -1,0 +1,25 @@
+{
+  "TableName": "InterviewSessions",
+  "AttributeDefinitions": [
+    { "AttributeName": "session_id", "AttributeType": "S" },
+    { "AttributeName": "sk", "AttributeType": "S" },
+    { "AttributeName": "user_id", "AttributeType": "S" },
+    { "AttributeName": "started_at", "AttributeType": "S" }
+  ],
+  "KeySchema": [
+    { "AttributeName": "session_id", "KeyType": "HASH" },
+    { "AttributeName": "sk", "KeyType": "RANGE" }
+  ],
+  "GlobalSecondaryIndexes": [
+    {
+      "IndexName": "user-sessions-index",
+      "KeySchema": [
+        { "AttributeName": "user_id", "KeyType": "HASH" },
+        { "AttributeName": "started_at", "KeyType": "RANGE" }
+      ],
+      "Projection": { "ProjectionType": "ALL" }
+    }
+  ],
+  "BillingMode": "PAY_PER_REQUEST",
+  "Description": "Single-Table Design cho một buổi phỏng vấn AI Interviewer. PK: session_id (HASH) + sk (RANGE). sk: META | TURN#<iso>#<seq> | CODE#<iso> | RUN#<iso> | BOARD#<stage> | EVAL. GSI user-sessions-index (sparse, chỉ item META có user_id) tra lịch sử phỏng vấn theo user_id."
+}

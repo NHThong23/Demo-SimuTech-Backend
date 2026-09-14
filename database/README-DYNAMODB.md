@@ -53,6 +53,8 @@ Khác với mô hình Cơ sở dữ liệu Quan hệ (MySQL) chia nhỏ thành n
 }
 ```
 
+> **Cập nhật cho module AI Interviewer:** đề bài có thêm 2 trường tùy chọn `hidden_constraints` (danh sách ràng buộc cố tình giấu ứng viên, AI chỉ tiết lộ khi ứng viên hỏi trúng) và `follow_up_topics` (danh sách câu hỏi mở rộng dùng ở chặng phản biện). Đề nào chưa có 2 trường này thì AI tự suy ra từ mô tả đề. Hai trường này **không bao giờ** trả về cho frontend.
+
 ### 3.2. Item Lượt nộp bài (`sk = "SUBMISSION#..."`)
 ```json
 {

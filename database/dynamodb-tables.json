@@ -56,6 +56,8 @@
               "is_sample": "Boolean"
             }
           ],
+          "hidden_constraints": "List<String> (tùy chọn — ràng buộc cố tình giấu ứng viên, chỉ AI đọc để tiết lộ dần)",
+          "follow_up_topics": "List<String> (tùy chọn — câu hỏi mở rộng dùng ở chặng 5)",
           "created_at": "String (ISO 8601 Timestamp)"
         },
         "Submission": {

@@ -98,7 +98,22 @@ aws dynamodb put-item "${EXTRA_ARGS[@]}" \
         "test_cases": {"L": [
             {"M": {"id": {"N": "1"}, "input": {"S": "[2,7,11,15]\n9"}, "output": {"S": "[0,1]"}, "is_sample": {"BOOL": true}}},
             {"M": {"id": {"N": "2"}, "input": {"S": "[3,2,4]\n6"}, "output": {"S": "[1,2]"}, "is_sample": {"BOOL": true}}},
-            {"M": {"id": {"N": "3"}, "input": {"S": "[3,3]\n6"}, "output": {"S": "[0,1]"}, "is_sample": {"BOOL": false}}}
+            {"M": {"id": {"N": "3"}, "input": {"S": "[3,3]\n6"}, "output": {"S": "[0,1]"}, "is_sample": {"BOOL": false}}},
+            {"M": {"id": {"N": "4"}, "input": {"S": "[-1,-2,-3,-4,-5]\n-8"}, "output": {"S": "[2,4]"}, "is_sample": {"BOOL": false}}},
+            {"M": {"id": {"N": "5"}, "input": {"S": "[0,4,3,0]\n0"}, "output": {"S": "[0,3]"}, "is_sample": {"BOOL": false}}},
+            {"M": {"id": {"N": "6"}, "input": {"S": "[2,5,5,11]\n10"}, "output": {"S": "[1,2]"}, "is_sample": {"BOOL": false}}},
+            {"M": {"id": {"N": "7"}, "input": {"S": "[1000000000,999999999,1,2]\n1999999999"}, "output": {"S": "[0,1]"}, "is_sample": {"BOOL": false}}}
+        ]},
+        "hidden_constraints": {"L": [
+            {"S": "Mảng có thể chứa số âm"},
+            {"S": "Đề bài đảm bảo luôn có đúng một đáp án"},
+            {"S": "Không được dùng một phần tử hai lần"},
+            {"S": "Độ dài mảng tối đa 10^5 phần tử"}
+        ]},
+        "follow_up_topics": {"L": [
+            {"S": "Nếu mảng đã được sắp xếp sẵn thì tối ưu thế nào?"},
+            {"S": "Nếu dữ liệu quá lớn không vừa RAM một máy thì xử lý ra sao?"},
+            {"S": "Nếu cần trả về tất cả các cặp thỏa mãn thì sao?"}
         ]},
         "created_at": {"S": "2026-09-07T10:10:00Z"}
     }'
@@ -118,7 +133,23 @@ aws dynamodb put-item "${EXTRA_ARGS[@]}" \
         "starter_code": {"S": "def is_palindrome(s: str) -> bool:\n    # Write your code here\n    pass"},
         "test_cases": {"L": [
             {"M": {"id": {"N": "1"}, "input": {"S": "A man, a plan, a canal: Panama"}, "output": {"S": "true"}, "is_sample": {"BOOL": true}}},
-            {"M": {"id": {"N": "2"}, "input": {"S": "race a car"}, "output": {"S": "false"}, "is_sample": {"BOOL": true}}}
+            {"M": {"id": {"N": "2"}, "input": {"S": "race a car"}, "output": {"S": "false"}, "is_sample": {"BOOL": true}}},
+            {"M": {"id": {"N": "3"}, "input": {"S": ""}, "output": {"S": "true"}, "is_sample": {"BOOL": false}}},
+            {"M": {"id": {"N": "4"}, "input": {"S": "a"}, "output": {"S": "true"}, "is_sample": {"BOOL": false}}},
+            {"M": {"id": {"N": "5"}, "input": {"S": "Was it a car or a cat I saw?"}, "output": {"S": "true"}, "is_sample": {"BOOL": false}}},
+            {"M": {"id": {"N": "6"}, "input": {"S": "Able , was I ere I saw Elba"}, "output": {"S": "true"}, "is_sample": {"BOOL": false}}},
+            {"M": {"id": {"N": "7"}, "input": {"S": "Not a palindrome at all"}, "output": {"S": "false"}, "is_sample": {"BOOL": false}}}
+        ]},
+        "hidden_constraints": {"L": [
+            {"S": "Chuỗi có thể rỗng"},
+            {"S": "Chỉ so sánh chữ cái và chữ số, bỏ qua ký tự khác"},
+            {"S": "Không phân biệt chữ hoa/thường"},
+            {"S": "Độ dài chuỗi tối đa 10^5 ký tự"}
+        ]},
+        "follow_up_topics": {"L": [
+            {"S": "Nếu chuỗi rất lớn, không thể load hết vào bộ nhớ thì sao?"},
+            {"S": "Nếu cần hỗ trợ Unicode/tiếng Việt có dấu thì xử lý thế nào?"},
+            {"S": "Nếu cho phép bỏ qua tối đa 1 ký tự để vẫn coi là palindrome thì giải thế nào?"}
         ]},
         "created_at": {"S": "2026-09-07T10:15:00Z"}
     }'
