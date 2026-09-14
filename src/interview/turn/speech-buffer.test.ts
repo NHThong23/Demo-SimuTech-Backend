@@ -72,4 +72,64 @@ describe("SpeechBuffer", () => {
     await buf.end(new AbortController().signal);
     expect(getCalls()).toBe(2);
   });
+
+  it("pause() đang chờ STT, addChunk() thêm dữ liệu mới khi pause() chưa xong: end() phải transcribe lại toàn bộ", async () => {
+    let transcribeResolved = false;
+    let resolveTranscribe: (() => void) | null = null;
+    const pauseStt: SttAgent = {
+      async transcribe() {
+        return new Promise<string>((resolve) => {
+          resolveTranscribe = () => {
+            transcribeResolved = true;
+            resolve("phần 1");
+          };
+        });
+      },
+    };
+    const buf = new SpeechBuffer(pauseStt);
+    buf.addChunk(Buffer.from([1]));
+    // Gọi pause() nhưng không await, để STT vẫn pending
+    const pausePromise = buf.pause(new AbortController().signal);
+    // Kiểm chứng STT vẫn chưa hoàn thành
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(transcribeResolved).toBe(false);
+    // Thêm chunk mới khi pause() chưa xong
+    buf.addChunk(Buffer.from([2]));
+    // Để pause() hoàn thành
+    resolveTranscribe!();
+    await pausePromise;
+    // Bây giờ end() phải thấy có chunk mới (2 chunks) nhưng lastTranscribedAtChunkCount = 1
+    // nên phải transcribe lại
+    let endCallCount = 0;
+    const endStt: SttAgent = {
+      async transcribe() {
+        endCallCount += 1;
+        return "phần 1 phần 2";
+      },
+    };
+    const buf2 = new SpeechBuffer(endStt);
+    buf2.addChunk(Buffer.from([1]));
+    let endPauseResolved = false;
+    let endPauseResolve: (() => void) | null = null;
+    const buf2PauseStt: SttAgent = {
+      async transcribe() {
+        return new Promise<string>((resolve) => {
+          endPauseResolve = () => {
+            endPauseResolved = true;
+            resolve("phần 1");
+          };
+        });
+      },
+    };
+    buf2["stt"] = buf2PauseStt;
+    const pausePromise2 = buf2.pause(new AbortController().signal);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    buf2.addChunk(Buffer.from([2]));
+    endPauseResolve!();
+    await pausePromise2;
+    buf2["stt"] = endStt;
+    const { transcript } = await buf2.end(new AbortController().signal);
+    expect(transcript).toBe("phần 1 phần 2");
+    expect(endCallCount).toBe(1);
+  });
 });

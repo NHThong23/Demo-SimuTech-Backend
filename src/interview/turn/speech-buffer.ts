@@ -36,8 +36,9 @@ export class SpeechBuffer {
   /** Chạy Whisper trước khi ứng viên còn im lặng 0.8s, để bù thời gian chờ khi speech.end tới. */
   async pause(signal: AbortSignal): Promise<void> {
     if (this.chunks.length === this.lastTranscribedAtChunkCount) return;
+    const countAtCallTime = this.chunks.length;
     this.cachedTranscript = await this.transcribeAll(signal);
-    this.lastTranscribedAtChunkCount = this.chunks.length;
+    this.lastTranscribedAtChunkCount = countAtCallTime;
   }
 
   async end(signal: AbortSignal): Promise<{ transcript: string; sttMs: number }> {

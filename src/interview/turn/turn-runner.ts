@@ -66,13 +66,16 @@ export class TurnRunner {
             json: true,
           });
           parsed = parseLlmOutput(raw);
-        } catch {
-          // giữ nguyên parsed lỗi, rơi xuống nhánh fallback bên dưới
+        } catch (err) {
+          if (ctx.signal.aborted) throw err;
+          llmFailed = true;
         }
       }
-      output = parsed.ok
-        ? parsed.value
-        : { action: "speak", reply: raw, note: null, revealed_constraints: [], covered_topics: [] };
+      output = llmFailed
+        ? { action: "listen", reply: FALLBACK_TEXT, note: null, revealed_constraints: [], covered_topics: [] }
+        : parsed.ok
+          ? parsed.value
+          : { action: "speak", reply: raw, note: null, revealed_constraints: [], covered_topics: [] };
     }
 
     const llmMs = Date.now() - startedAt;

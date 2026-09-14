@@ -120,4 +120,49 @@ describe("TurnRunner", () => {
     expect(chunks.length).toBe(1);
     expect(calls).not.toContain("end");
   });
+
+  it("retry LLM call ném lỗi (non-abort): trả turn dự phòng, action=listen, error=LLM_UNAVAILABLE", async () => {
+    const llm = new FakeLlmAgent();
+    llm.enqueue("không phải JSON");
+    // Lần retry sẽ throw lỗi
+    const llmWithRetryError = {
+      chat: async (messages: any[]) => {
+        if (messages[messages.length - 1]?.content?.includes("Định dạng JSON")) {
+          throw new Error("timeout trên lần retry");
+        }
+        return "không phải JSON";
+      },
+    };
+    const { sink, calls } = makeSink();
+    const runner = new TurnRunner({ llm: llmWithRetryError, tts: new FakeTtsAgent(), sink });
+    const { turn, stageAction } = await runner.run(ctxWith());
+    expect(stageAction).toBe("listen");
+    expect(turn.error).toBe("LLM_UNAVAILABLE");
+    expect(turn.text).toBe("Bạn cho mình vài giây nhé.");
+    expect(calls[0]).toBe("start");
+  });
+
+  it("retry LLM call abort: run() phải throw, không trả turn dự phòng", async () => {
+    const controller = new AbortController();
+    const llm = new FakeLlmAgent();
+    llm.enqueue("không phải JSON");
+    // Lần retry sẽ abort
+    const llmWithRetryAbort = {
+      chat: async (messages: any[], opts: any) => {
+        if (messages[messages.length - 1]?.content?.includes("Định dạng JSON")) {
+          controller.abort();
+          throw new Error("aborted");
+        }
+        return "không phải JSON";
+      },
+    };
+    const { sink } = makeSink();
+    const runner = new TurnRunner({ llm: llmWithRetryAbort, tts: new FakeTtsAgent(), sink });
+    try {
+      await runner.run(ctxWith({ signal: controller.signal }));
+      expect(false).toBe(true); // should throw
+    } catch (err) {
+      expect((err as Error).message).toBe("aborted");
+    }
+  });
 });
