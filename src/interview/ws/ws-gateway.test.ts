@@ -5,7 +5,7 @@ import { attachWsGateway, hashToken, type WsGatewayDeps } from "./ws-gateway";
 import { SessionManager } from "../session/session-manager";
 import type { InterviewRepository } from "../persistence/interview-repository";
 import { MetricsCollector } from "../metrics/metrics";
-import { SystemClock } from "../session/clock";
+import { SystemClock, type Clock } from "../session/clock";
 import { FakeLlmAgent, FakeSttAgent, FakeTtsAgent, FakeCodeExecutor } from "../agents/fakes";
 import type { Problem } from "../domain/types";
 
@@ -65,12 +65,12 @@ describe("WsGateway", () => {
     for (const s of servers) s.close();
   });
 
-  function makeDeps(overrides: Partial<{ llm: FakeLlmAgent }> = {}): WsGatewayDeps {
+  function makeDeps(overrides: Partial<{ llm: FakeLlmAgent; clock: Clock }> = {}): WsGatewayDeps {
     return {
       sessionManager,
       interviewRepository: noopRepo(),
       metrics: new MetricsCollector(),
-      clock: new SystemClock(),
+      clock: overrides.clock ?? new SystemClock(),
       agents: {
         llm: overrides.llm ?? new FakeLlmAgent(),
         stt: new FakeSttAgent(),
@@ -165,6 +165,102 @@ describe("WsGateway", () => {
     ws.send(JSON.stringify({ type: "speech.start" }));
     const cancelled = await cancelledPromise;
     expect(cancelled.type).toBe("ai.speech.cancelled");
+    ws.close();
+  });
+
+  it("đóng kết nối với mã 4404 khi session_id không tồn tại", async () => {
+    const deps = makeDeps();
+    const { wss, port } = await startServer(deps);
+    servers.push(wss);
+    // Cố ý KHÔNG gọi sessionManager.create(...) cho session_id này.
+    const ws = new WebSocket(`ws://localhost:${port}/ws/session/khong-ton-tai?token=tok`);
+    const closeCode = await new Promise((resolve) => ws.once("close", (code) => resolve(code)));
+    expect(closeCode).toBe(4404);
+  });
+
+  it("hủy đúng handle forced-tick timer hiện tại khi bị thay bởi kết nối mới (không rò rỉ timer cũ)", async () => {
+    // Bug đã sửa: connections.set(...) từng lưu snapshot của biến forcedTickTimer TRƯỚC khi
+    // scheduleForcedTick() chạy lần đầu, nên giá trị lưu trong map luôn là `null` — khiến
+    // clearTimeout(existing.forcedTickTimer) ở lần reconnect kế tiếp trở thành no-op và timer
+    // 5s lặp lại của kết nối cũ chạy mãi mãi. Test này bắt trực tiếp gốc rễ: bọc Clock để ghi
+    // lại các lời gọi setTimeout xuất phát cụ thể từ scheduleForcedTick (nhận diện qua stack
+    // trace, vì EventRouter cũng tự lên lịch các timer riêng của nó dùng cùng khoảng 5000ms nên
+    // không thể phân biệt chỉ bằng số ms hay thứ tự/đếm số lần gọi — thứ tự đó còn phụ thuộc vào
+    // việc lượt AI mở đầu đã nói xong kịp trước khi sự kiện "open" phía client bắn ra hay chưa),
+    // rồi xác nhận lần reconnect thực sự clearTimeout đúng handle đó — không phải null/handle sai.
+    const forcedTickSetTimeoutHandles: unknown[] = [];
+    const clearTimeoutCalls: unknown[] = [];
+    const real = new SystemClock();
+    const spyClock: Clock = {
+      now: () => real.now(),
+      setTimeout: (fn, ms) => {
+        const handle = real.setTimeout(fn, ms);
+        if (new Error().stack?.includes("scheduleForcedTick")) forcedTickSetTimeoutHandles.push(handle);
+        return handle;
+      },
+      clearTimeout: (handle) => {
+        clearTimeoutCalls.push(handle);
+        real.clearTimeout(handle);
+      },
+    };
+    const deps = makeDeps({ clock: spyClock });
+    const { wss, port } = await startServer(deps);
+    servers.push(wss);
+    sessionManager.create({ sessionId: "s9", tokenHash: hashToken("tok"), problem: PROBLEM, language: "python", clock: deps.clock });
+
+    const ws1 = new WebSocket(`ws://localhost:${port}/ws/session/s9?token=tok`);
+    await new Promise((resolve) => ws1.once("open", resolve));
+
+    expect(forcedTickSetTimeoutHandles.length).toBeGreaterThanOrEqual(1);
+    const ws1ForcedTickHandle = forcedTickSetTimeoutHandles[0];
+
+    const ws2 = new WebSocket(`ws://localhost:${port}/ws/session/s9?token=tok`);
+    await new Promise((resolve) => ws2.once("open", resolve));
+
+    // The reconnect must cancel ws1's forced-tick timer using its real, current handle.
+    expect(clearTimeoutCalls).toContain(ws1ForcedTickHandle);
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it("ngắt lời sau khi đã có ít nhất 1 lượt trước đó: đánh dấu đúng turn interrupted và đúng utteranceId", async () => {
+    const llm = new FakeLlmAgent();
+    llm.enqueue(JSON.stringify({ action: "speak", reply: "Chào bạn.", note: null, revealed_constraints: [], covered_topics: [] }));
+    llm.enqueue(JSON.stringify({ action: "speak", reply: "Câu một. Câu hai. Câu ba.", note: null, revealed_constraints: [], covered_topics: [] }));
+    const deps = makeDeps({ llm });
+    const { wss, port } = await startServer(deps);
+    servers.push(wss);
+    const session = sessionManager.create({ sessionId: "s10", tokenHash: hashToken("tok"), problem: PROBLEM, language: "python", clock: deps.clock });
+
+    const ws = new WebSocket(`ws://localhost:${port}/ws/session/s10?token=tok`);
+    // Chờ lượt đầu tiên (stage_enter, "Chào bạn.") nói xong hoàn toàn và được ghi vào session.turns.
+    await waitForType(ws, "ai.speech.end");
+
+    // Kích hoạt lượt AI thứ hai qua code.run (không phụ thuộc FakeSttAgent).
+    const secondStartPromise = waitForType(ws, "ai.speech.start");
+    ws.send(JSON.stringify({ type: "code.run" }));
+    const secondStart = await secondStartPromise;
+
+    // Trước khi sửa: onInterrupt dùng session.turns.at(-1), tại thời điểm này session.turns chỉ
+    // có lượt ĐẦU TIÊN (lượt thứ hai chưa kịp được recordTurn vì đó là việc runTurn làm SAU khi
+    // turnRunner.run() resolve, tức là sau khi onInterrupt đã chạy xong) — nên sẽ đánh dấu nhầm
+    // lượt đầu tiên và gửi sai utteranceId.
+    const cancelledPromise = waitForType(ws, "ai.speech.cancelled");
+    ws.send(JSON.stringify({ type: "speech.start" }));
+    const cancelled = await cancelledPromise;
+
+    expect(cancelled.data.utteranceId).toBe(secondStart.data.utteranceId);
+    expect(cancelled.data.utteranceId).not.toBe("");
+
+    // Đợi runTurn của lượt bị ngắt resolve và tự ghi nhận mình vào session.turns.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const interruptedTurn = session.turns.find((t) => t.turnId === secondStart.data.utteranceId);
+    expect(interruptedTurn?.interrupted).toBe(true);
+    expect(session.interruptions).toBeGreaterThanOrEqual(1);
+    expect(session.turns[0]?.interrupted).toBe(false);
+
     ws.close();
   });
 });

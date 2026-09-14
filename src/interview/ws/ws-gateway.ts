@@ -24,7 +24,11 @@ export interface WsGatewayDeps {
   agents: { llm: LlmAgent; stt: SttAgent; tts: TtsAgent; codeExecutor: CodeExecutor };
 }
 
-const connections = new Map<string, { ws: WebSocket; eventRouter: EventRouter; forcedTickTimer: unknown; clock: Clock }>();
+interface TimerHolder {
+  current: unknown;
+}
+
+const connections = new Map<string, { ws: WebSocket; eventRouter: EventRouter; timerHolder: TimerHolder; clock: Clock }>();
 
 export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -40,11 +44,15 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
   }
   const sessionId: string = sessionIdParam;
   const foundSession = deps.sessionManager.get(sessionId);
-  if (!foundSession || foundSession.tokenHash !== hashToken(token)) {
+  if (!foundSession) {
+    ws.close(4404, "Session not found");
+    return;
+  }
+  if (foundSession.tokenHash !== hashToken(token)) {
     ws.close(4401, "Invalid token");
     return;
   }
-  // Re-bound with a non-optional type: TypeScript's control-flow narrowing from the guard
+  // Re-bound with a non-optional type: TypeScript's control-flow narrowing from the guards
   // above does not persist into the many nested closures below (sink handlers, runTurn,
   // applyStageTransition, handleClientMessage, ...), so `session`/`sessionId` must have a
   // non-union static type for those closures to type-check without `!` assertions everywhere.
@@ -53,7 +61,7 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
   const existing = connections.get(sessionId);
   if (existing) {
     existing.eventRouter.dispose();
-    existing.clock.clearTimeout(existing.forcedTickTimer);
+    existing.clock.clearTimeout(existing.timerHolder.current);
     existing.ws.close(4409, "Replaced by new connection");
     connections.delete(sessionId);
   }
@@ -80,11 +88,19 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
   };
 
   let busy = false;
-  let forcedTickTimer: unknown = null;
+  const timerHolder: TimerHolder = { current: null };
+  // The id of the utterance currently being spoken (set as soon as TurnRunner tells us it has
+  // started, cleared when it finishes). onInterrupt reads this directly instead of guessing from
+  // session.turns.at(-1) — at the moment onInterrupt runs (synchronously, from the client's
+  // speech.start message) the in-flight turn has NOT been recorded into session.turns yet (that
+  // only happens after `await turnRunner.run(...)` resolves back in runTurn), so `.at(-1)` would
+  // either be undefined (first turn ever) or point at a stale, unrelated, already-finished turn.
+  let inFlightTurnId: string | null = null;
 
   const sink: TurnOutputSink = {
     onAiReply: (id, text) => send({ type: "ai.reply", data: { utteranceId: id, text } }),
     onAiSpeechStart: (id) => {
+      inFlightTurnId = id;
       session.aiStatus = "speaking";
       send({ type: "ai.speech.start", data: { utteranceId: id, sampleRate: 24000, format: "pcm16" } });
     },
@@ -92,6 +108,7 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
       if (ws.readyState === ws.OPEN) ws.send(chunk);
     },
     onAiSpeechEnd: (id) => {
+      inFlightTurnId = null;
       session.aiStatus = "idle";
       send({ type: "ai.speech.end", data: { utteranceId: id } });
       eventRouter.handleAiFinishedSpeaking();
@@ -108,19 +125,27 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
     session.updateHiddenTestProgress(results.filter((t) => t.passed).length, hiddenCases.length);
   }
 
-  function applyStageTransition(event: StageMachineEvent): void {
-    const result = session.attemptTransition(event);
-    if (!result.transitioned) return;
-    void deps.interviewRepository.updateMeta(session.sessionId, {
-      current_stage: session.currentStage,
-      status: session.status,
-    });
+  /** Persist + notify side effects of a transition that has ALREADY been applied via
+   * `session.attemptTransition(...)`. Shared by `applyStageTransition` and the EventRouter's
+   * `canDoneStage`, which both need to run this after computing (and applying) a transition
+   * result themselves — never call `session.attemptTransition` again here, that would apply the
+   * same transition a second time. */
+  function afterTransitionApplied(): void {
+    void deps.interviewRepository
+      .updateMeta(session.sessionId, { current_stage: session.currentStage, status: session.status })
+      .catch(() => deps.metrics.recordError("persistence"));
     if (session.status === "completed") {
       void finishSession();
     } else {
       sendState();
       eventRouter.onStageEntered();
     }
+  }
+
+  function applyStageTransition(event: StageMachineEvent): void {
+    const result = session.attemptTransition(event);
+    if (!result.transitioned) return;
+    afterTransitionApplied();
   }
 
   async function finishSession(): Promise<void> {
@@ -141,8 +166,12 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
       allNotes: notes,
       latestCode: session.latestCode,
     });
-    await deps.interviewRepository.putEvaluation(session.sessionId, evaluation);
-    await deps.interviewRepository.updateMeta(session.sessionId, { status: "completed", ended_at: new Date().toISOString() });
+    await deps.interviewRepository
+      .putEvaluation(session.sessionId, evaluation)
+      .catch(() => deps.metrics.recordError("persistence"));
+    await deps.interviewRepository
+      .updateMeta(session.sessionId, { status: "completed", ended_at: new Date().toISOString() })
+      .catch(() => deps.metrics.recordError("persistence"));
     send({ type: "session.evaluation", data: evaluation });
     sendState();
     cleanup();
@@ -151,12 +180,21 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
   async function runTurn(trigger: TriggerType, payload: TriggerPayload): Promise<void> {
     busy = true;
     session.aiStatus = "thinking";
+    inFlightTurnId = null;
     const controller = new AbortController();
     session.currentTurnController = controller;
     const startedAt = deps.clock.now();
     try {
       const result = await turnRunner.run({ session: session.toSnapshot(), trigger, payload, signal: controller.signal });
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) {
+        // The turn was cut short mid-speech (barge-in). TurnRunner still returns a fully-formed
+        // Turn (the LLM call had already completed; only the TTS loop was interrupted) — record
+        // it and mark it interrupted so it isn't silently dropped from history/persistence, and
+        // so `session.interruptions` (used in the final evaluation) reflects it.
+        session.recordTurn(result.turn);
+        session.markInterrupted(result.turn.turnId);
+        return;
+      }
       session.recordTurn(result.turn);
       session.applyLlmReveal({ revealed_constraints: result.revealedConstraints, covered_topics: result.coveredTopics });
       deps.metrics.recordTurnLatency({
@@ -192,44 +230,45 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
     onTrigger: (trigger, payload) => void runTurn(trigger, payload),
     onInterrupt: () => {
       session.currentTurnController?.abort();
-      const lastTurn = session.turns.at(-1);
-      if (lastTurn) session.markInterrupted(lastTurn.turnId);
-      send({ type: "ai.speech.cancelled", data: { utteranceId: lastTurn?.turnId ?? "" } });
+      // Use the id of the utterance actually being spoken right now (captured by the sink as
+      // soon as TurnRunner started it), not session.turns.at(-1): at this point (synchronously,
+      // from the client's speech.start handler) the in-flight turn has not been recorded into
+      // session.turns yet — that happens later, after `turnRunner.run(...)` resolves back in
+      // runTurn — so `.at(-1)` would point at a stale/unrelated turn or be undefined.
+      send({ type: "ai.speech.cancelled", data: { utteranceId: inFlightTurnId ?? "" } });
       session.aiStatus = "listening";
     },
     onStagePrecondition: (message) => send({ type: "error", data: { code: "STAGE_PRECONDITION", message, retryable: false } }),
     canDoneStage: () => {
       const result = session.attemptTransition({ type: "stage_done_button" });
       if (result.rejected) return { ok: false, message: result.rejected.message };
-      if (result.transitioned) {
-        void deps.interviewRepository.updateMeta(session.sessionId, {
-          current_stage: session.currentStage,
-          status: session.status,
-        });
-        if (session.status === "completed") void finishSession();
-        else {
-          sendState();
-          eventRouter.onStageEntered();
-        }
-      }
+      if (result.transitioned) afterTransitionApplied();
       return { ok: true };
     },
   });
 
   function scheduleForcedTick(): void {
-    forcedTickTimer = deps.clock.setTimeout(() => {
+    // Write into the shared holder, not a fresh local variable — the value stored in
+    // `connections` is `timerHolder` itself (by reference), so every reschedule (this function
+    // calls itself again on each tick) keeps `connections.get(sessionId).timerHolder.current`
+    // pointing at the CURRENT live timer handle. Storing a plain `unknown` snapshot in the map
+    // (as opposed to this holder) would freeze it at whatever the value was at `connections.set`
+    // time — which is `null`, since this function hasn't run yet at that point — making a later
+    // reconnect's `clearTimeout(existing.timerHolder.current)` a permanent no-op and leaking a
+    // real 5s-repeating timer for the lifetime of the process.
+    timerHolder.current = deps.clock.setTimeout(() => {
       applyStageTransition({ type: "tick" });
       scheduleForcedTick();
     }, 5000);
   }
 
   function cleanup(): void {
-    deps.clock.clearTimeout(forcedTickTimer);
+    deps.clock.clearTimeout(timerHolder.current);
     eventRouter.dispose();
-    if (connections.get(sessionId) && connections.get(sessionId)?.ws === ws) connections.delete(sessionId);
+    if (connections.get(sessionId)?.ws === ws) connections.delete(sessionId);
   }
 
-  connections.set(sessionId, { ws, eventRouter, forcedTickTimer, clock: deps.clock });
+  connections.set(sessionId, { ws, eventRouter, timerHolder, clock: deps.clock });
 
   sendState();
   eventRouter.onStageEntered();
@@ -293,8 +332,12 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
         }
         session.recordCodeRun(result);
         send({ type: "code.result", data: result });
-        void deps.interviewRepository.putCodeSnapshot(session.sessionId, session.currentStage, session.latestCode, session.language);
-        void deps.interviewRepository.putRun(session.sessionId, session.currentStage, result);
+        void deps.interviewRepository
+          .putCodeSnapshot(session.sessionId, session.currentStage, session.latestCode, session.language)
+          .catch(() => deps.metrics.recordError("persistence"));
+        void deps.interviewRepository
+          .putRun(session.sessionId, session.currentStage, result)
+          .catch(() => deps.metrics.recordError("persistence"));
 
         if (session.currentStage === 4) {
           const hiddenCases = session.problem.test_cases.filter((t) => !t.is_sample);
@@ -314,7 +357,11 @@ export function attachWsGateway(ws: WebSocket, url: URL, deps: WsGatewayDeps): v
         return;
       case "whiteboard.done": {
         const board = session.latestBoardByStage[session.currentStage];
-        if (board) void deps.interviewRepository.putBoard(session.sessionId, session.currentStage, board);
+        if (board) {
+          void deps.interviewRepository
+            .putBoard(session.sessionId, session.currentStage, board)
+            .catch(() => deps.metrics.recordError("persistence"));
+        }
         eventRouter.handleWhiteboardDone();
         return;
       }
