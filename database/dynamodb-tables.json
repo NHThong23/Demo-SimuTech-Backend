@@ -56,6 +56,13 @@
               "is_sample": "Boolean"
             }
           ],
+          "hints": "List<String> — Gợi ý giải bài (hiển thị tuần tự khi candidate cần trợ giúp)",
+          "tags": "List<String> — Tags kỹ thuật (hashmap, two-pointer, dp, ...)",
+          "companies": "List<String> — Công ty hay hỏi bài này (Google, Amazon, ...)",
+          "interview_frequency": "Number (0-100) — Tần suất xuất hiện trong phỏng vấn",
+          "constraints": "String — Ràng buộc input (multiline)",
+          "follow_up_questions": "List<String> — Câu hỏi follow-up AI có thể hỏi thêm",
+          "supported_languages": "List<String> — Ngôn ngữ hỗ trợ (python, javascript, java, cpp)",
           "created_at": "String (ISO 8601 Timestamp)"
         },
         "Submission": {
@@ -66,8 +73,14 @@
           "user_id": "String (GSI user-submissions-index HASH Key)",
           "language": "String ('python' | 'javascript' | 'cpp' | ...)",
           "code": "String",
-          "status": "String ('ACCEPTED' | 'WRONG_ANSWER' | 'TIME_LIMIT_EXCEEDED' | ...)",
+          "status": "String ('ACCEPTED' | 'WRONG_ANSWER' | 'TIME_LIMIT_EXCEEDED' | 'RUNTIME_ERROR' | 'COMPILATION_ERROR')",
           "execution_time_ms": "Number",
+          "memory_usage_kb": "Number — Bộ nhớ sử dụng (KB)",
+          "test_cases_passed": "Number — Số test cases đã pass",
+          "total_test_cases": "Number — Tổng số test cases",
+          "error_message": "String | NULL — Thông báo lỗi (nếu có)",
+          "ai_review": "String | NULL — Nhận xét của AI về code submission",
+          "interview_id": "String | NULL — Liên kết đến phiên phỏng vấn (nếu nộp trong interview)",
           "created_at": "String (ISO 8601 Timestamp - GSI user-submissions-index RANGE Key)"
         }
       },
@@ -100,6 +113,157 @@
           "operation": "Query",
           "index_name": "category-difficulty-index",
           "key_condition": "category = :cat AND difficulty = :diff"
+        }
+      ]
+    },
+    {
+      "TableName": "Interviews",
+      "AttributeDefinitions": [
+        { "AttributeName": "interview_id", "AttributeType": "S" },
+        { "AttributeName": "sk", "AttributeType": "S" },
+        { "AttributeName": "user_id", "AttributeType": "S" },
+        { "AttributeName": "started_at", "AttributeType": "S" },
+        { "AttributeName": "problem_id", "AttributeType": "S" }
+      ],
+      "KeySchema": [
+        { "AttributeName": "interview_id", "KeyType": "HASH" },
+        { "AttributeName": "sk", "KeyType": "RANGE" }
+      ],
+      "GlobalSecondaryIndexes": [
+        {
+          "IndexName": "user-interviews-index",
+          "KeySchema": [
+            { "AttributeName": "user_id", "KeyType": "HASH" },
+            { "AttributeName": "started_at", "KeyType": "RANGE" }
+          ],
+          "Projection": {
+            "ProjectionType": "ALL"
+          }
+        },
+        {
+          "IndexName": "problem-interviews-index",
+          "KeySchema": [
+            { "AttributeName": "problem_id", "KeyType": "HASH" },
+            { "AttributeName": "started_at", "KeyType": "RANGE" }
+          ],
+          "Projection": {
+            "ProjectionType": "ALL"
+          }
+        }
+      ],
+      "BillingMode": "PAY_PER_REQUEST",
+      "Description": "Single-Table Design managing all Interview-related entities (Sessions, Chat Messages, Code Snapshots, AI Evaluations). Primary Key: interview_id (HASH) + sk (RANGE). GSIs: 'user-interviews-index' (user_id + started_at) and 'problem-interviews-index' (problem_id + started_at).",
+      "EntitySchemas": {
+        "InterviewSession": {
+          "interview_id": "String (HASH Key, e.g. intv_1725700000001)",
+          "sk": "String (RANGE Key, fixed: 'METADATA')",
+          "entity_type": "String ('INTERVIEW')",
+          "user_id": "String (GSI user-interviews-index HASH Key)",
+          "problem_id": "String (GSI problem-interviews-index HASH Key)",
+          "interview_type": "String ('CODING' | 'SYSTEM_DESIGN' | 'BEHAVIORAL')",
+          "difficulty": "String ('EASY' | 'MEDIUM' | 'HARD')",
+          "status": "String ('PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'ABANDONED')",
+          "ai_model": "String — Model AI sử dụng (gpt-4o, claude-3.5-sonnet, ...)",
+          "duration_seconds": "Number — Thời gian phỏng vấn (giây)",
+          "overall_score": "Number (0-100) — Điểm tổng hợp",
+          "started_at": "String (ISO 8601 - GSI RANGE Key)",
+          "completed_at": "String (ISO 8601) | NULL"
+        },
+        "ChatMessage": {
+          "interview_id": "String (HASH Key)",
+          "sk": "String (RANGE Key, pattern: 'MSG#<timestamp>#<msg_id>')",
+          "entity_type": "String ('MESSAGE')",
+          "sender": "String ('AI' | 'USER')",
+          "content": "String — Nội dung tin nhắn",
+          "message_type": "String ('QUESTION' | 'ANSWER' | 'HINT' | 'FOLLOW_UP' | 'CODE_REVIEW')",
+          "created_at": "String (ISO 8601 Timestamp)"
+        },
+        "CodeSnapshot": {
+          "interview_id": "String (HASH Key)",
+          "sk": "String (RANGE Key, pattern: 'CODE#<timestamp>')",
+          "entity_type": "String ('CODE_SNAPSHOT')",
+          "language": "String",
+          "code": "String — Code tại thời điểm snapshot",
+          "test_results": {
+            "passed": "Number",
+            "total": "Number",
+            "details": [
+              {
+                "test_id": "Number",
+                "status": "String ('PASSED' | 'FAILED' | 'ERROR')",
+                "execution_time_ms": "Number"
+              }
+            ]
+          },
+          "ai_code_review": "String — AI nhận xét code tại thời điểm này",
+          "created_at": "String (ISO 8601 Timestamp)"
+        },
+        "AIEvaluation": {
+          "interview_id": "String (HASH Key)",
+          "sk": "String (RANGE Key, pattern: 'EVAL#<eval_id>')",
+          "entity_type": "String ('EVALUATION')",
+          "scores": {
+            "problem_solving": "Number (0-100)",
+            "code_quality": "Number (0-100)",
+            "communication": "Number (0-100)",
+            "time_management": "Number (0-100)",
+            "optimization": "Number (0-100)"
+          },
+          "overall_score": "Number (0-100)",
+          "strengths": "List<String> — Điểm mạnh",
+          "weaknesses": "List<String> — Điểm yếu",
+          "suggestions": "List<String> — Đề xuất cải thiện",
+          "hire_recommendation": "String ('STRONG_YES' | 'LEAN_YES' | 'LEAN_NO' | 'STRONG_NO')",
+          "created_at": "String (ISO 8601 Timestamp)"
+        }
+      },
+      "AccessPatterns": [
+        {
+          "id": "AP1",
+          "description": "Get interview session metadata",
+          "operation": "GetItem",
+          "key": {
+            "interview_id": "String",
+            "sk": "METADATA"
+          }
+        },
+        {
+          "id": "AP2",
+          "description": "Get all chat messages for an interview (sorted by time)",
+          "operation": "Query",
+          "key_condition": "interview_id = :iid AND begins_with(sk, 'MSG#')"
+        },
+        {
+          "id": "AP3",
+          "description": "Get code snapshots for an interview (sorted by time)",
+          "operation": "Query",
+          "key_condition": "interview_id = :iid AND begins_with(sk, 'CODE#')"
+        },
+        {
+          "id": "AP4",
+          "description": "Get AI evaluation for an interview",
+          "operation": "Query",
+          "key_condition": "interview_id = :iid AND begins_with(sk, 'EVAL#')"
+        },
+        {
+          "id": "AP5",
+          "description": "Get entire interview context (session + messages + code + eval) in 1 request",
+          "operation": "Query",
+          "key_condition": "interview_id = :iid"
+        },
+        {
+          "id": "AP6",
+          "description": "Get all interviews by user_id sorted by date (via GSI)",
+          "operation": "Query",
+          "index_name": "user-interviews-index",
+          "key_condition": "user_id = :uid"
+        },
+        {
+          "id": "AP7",
+          "description": "Get all interviews for a specific problem (via GSI)",
+          "operation": "Query",
+          "index_name": "problem-interviews-index",
+          "key_condition": "problem_id = :pid"
         }
       ]
     }
