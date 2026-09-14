@@ -251,7 +251,7 @@ Claude-Session: https://claude.ai/code/session_01MUFTtbSpXFjJd3tNut85NN"
 
 **Interfaces:**
 - Consumes: không có (task nền tảng).
-- Produces: toàn bộ type ở phần "Kiểu dữ liệu dùng chung" phía trên; `ClientMessageSchema`, `ClientMessage`, `ServerMessage` (union type), hàm dựng message `buildServerMessage(...)` — dùng ở Task 17 (WS gateway).
+- Produces: toàn bộ type ở phần "Kiểu dữ liệu dùng chung" phía trên; `ClientMessageSchema`, `ClientMessage`, `ServerMessage` (union type), `decodeClientMessage(raw)`, `encodeServerMessage(msg)` — dùng ở Task 16 (WS gateway).
 
 - [ ] **Step 1: Tạo `src/interview/domain/types.ts`**
 
@@ -442,7 +442,7 @@ Claude-Session: https://claude.ai/code/session_01MUFTtbSpXFjJd3tNut85NN"
 
 **Interfaces:**
 - Consumes: `StageConfig`, `Stage` từ `../domain/types`.
-- Produces: `STAGE_CONFIG: StageConfig[]`, `getStageConfig(stage: Stage): StageConfig` — dùng ở Task 4, 5, 8. `Clock` interface, `SystemClock`, `FakeClock` (có `advance(ms)`) — dùng ở Task 5, 8, 10.
+- Produces: `STAGE_CONFIG: StageConfig[]`, `getStageConfig(stage: Stage): StageConfig` — dùng ở Task 4, 5, 8, 9, 16, 17. `Clock` interface, `SystemClock`, `FakeClock` (có `advance(ms)`) — dùng ở Task 5, 7, 15, 16 (Task 8, 10, 17 chỉ dùng trong test fixture, không phải interface bắt buộc).
 
 - [ ] **Step 1: Viết test cấu hình chặng**
 
