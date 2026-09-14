@@ -22,6 +22,9 @@ const envSchema = z.object({
   // JWT / Auth Config
   JWT_SECRET: z.string().default(process.env.NEXTAUTH_SECRET || 'simutech_jwt_secret_dev_key_2026'),
   JWT_EXPIRES_IN: z.string().default('7d'),
+
+  // Piston Code Execution Engine
+  PISTON_API_URL: z.string().default('http://localhost:2000'),
 });
 
 const parsed = envSchema.safeParse(process.env);

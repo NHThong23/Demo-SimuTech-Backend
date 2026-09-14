@@ -1,0 +1,31 @@
+services:
+  # =============================================================================
+  # PISTON — Code Execution Engine (Sandbox cách ly)
+  # Chạy code ứng viên trong môi trường cô lập, hỗ trợ 50+ ngôn ngữ
+  # API endpoint: http://localhost:2000/api/v2/execute
+  # =============================================================================
+  piston:
+    image: ghcr.io/engineer-man/piston:latest
+    container_name: simutech-piston
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "2000:2000"
+    volumes:
+      - piston_data:/piston
+    tmpfs:
+      - /piston/jobs:exec,size=256M
+    environment:
+      - PISTON_RUN_TIMEOUT=5000        # Giới hạn thời gian chạy: 5 giây
+      - PISTON_COMPILE_TIMEOUT=10000   # Giới hạn thời gian biên dịch: 10 giây
+      - PISTON_OUTPUT_MAX_SIZE=65536   # Giới hạn output: 64KB
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2000/api/v2/runtimes"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  piston_data:
+    driver: local
