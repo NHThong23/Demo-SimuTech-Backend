@@ -17,7 +17,13 @@ app.prepare().then(() => {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "", `http://${req.headers.host}`);
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "", `http://${req.headers.host}`);
+    } catch {
+      socket.destroy();
+      return;
+    }
     if (url.pathname.startsWith("/ws/session/")) {
       wss.handleUpgrade(req, socket, head, (ws) => {
         const runtime = getInterviewRuntime();
@@ -44,4 +50,7 @@ app.prepare().then(() => {
   server.listen(port, () => {
     console.log(`> Server ready on http://localhost:${port} (WS tại /ws/session/:id)`);
   });
+}).catch((err) => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
 });
