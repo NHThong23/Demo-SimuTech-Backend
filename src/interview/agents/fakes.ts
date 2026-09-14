@@ -40,6 +40,11 @@ export class FakeSttAgent implements SttAgent {
 
 export class FakeTtsAgent implements TtsAgent {
   async synthesize(text: string, _opts: { signal: AbortSignal }): Promise<Buffer> {
+    // Yield a real event-loop turn (not just a microtask) so tests that exercise a genuine
+    // WebSocket round trip mid-speech (e.g. barge-in / interrupt) have a real window to land
+    // their message before this fake "finishes speaking" — a real TTS call always takes
+    // non-trivial wall-clock time, this just makes the fake behave a bit more like it.
+    await new Promise<void>((resolve) => setImmediate(resolve));
     return Buffer.from(`FAKE_AUDIO:${text}`, "utf8");
   }
 }
