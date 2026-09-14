@@ -1,0 +1,107 @@
+{
+  "tables": [
+    {
+      "TableName": "Problems",
+      "AttributeDefinitions": [
+        { "AttributeName": "problem_id", "AttributeType": "S" },
+        { "AttributeName": "sk", "AttributeType": "S" },
+        { "AttributeName": "user_id", "AttributeType": "S" },
+        { "AttributeName": "created_at", "AttributeType": "S" },
+        { "AttributeName": "category", "AttributeType": "S" },
+        { "AttributeName": "difficulty", "AttributeType": "S" }
+      ],
+      "KeySchema": [
+        { "AttributeName": "problem_id", "KeyType": "HASH" },
+        { "AttributeName": "sk", "KeyType": "RANGE" }
+      ],
+      "GlobalSecondaryIndexes": [
+        {
+          "IndexName": "user-submissions-index",
+          "KeySchema": [
+            { "AttributeName": "user_id", "KeyType": "HASH" },
+            { "AttributeName": "created_at", "KeyType": "RANGE" }
+          ],
+          "Projection": {
+            "ProjectionType": "ALL"
+          }
+        },
+        {
+          "IndexName": "category-difficulty-index",
+          "KeySchema": [
+            { "AttributeName": "category", "KeyType": "HASH" },
+            { "AttributeName": "difficulty", "KeyType": "RANGE" }
+          ],
+          "Projection": {
+            "ProjectionType": "ALL"
+          }
+        }
+      ],
+      "BillingMode": "PAY_PER_REQUEST",
+      "Description": "Single-Table Design managing all Problem-related entities (Problems, embedded Test Cases, Submissions). Primary Key: problem_id (HASH) + sk (RANGE). GSIs: 'user-submissions-index' (user_id + created_at) and 'category-difficulty-index' (category + difficulty).",
+      "EntitySchemas": {
+        "ProblemMetadata": {
+          "problem_id": "String (HASH Key, e.g. prob_1)",
+          "sk": "String (RANGE Key, fixed: 'METADATA')",
+          "entity_type": "String ('PROBLEM')",
+          "title": "String",
+          "description": "String",
+          "difficulty": "String ('EASY' | 'MEDIUM' | 'HARD')",
+          "category": "String (GSI category-difficulty-index HASH Key)",
+          "starter_code": "String",
+          "test_cases": [
+            {
+              "id": "Number",
+              "input": "String",
+              "output": "String",
+              "is_sample": "Boolean"
+            }
+          ],
+          "created_at": "String (ISO 8601 Timestamp)"
+        },
+        "Submission": {
+          "problem_id": "String (HASH Key, e.g. prob_1)",
+          "sk": "String (RANGE Key, pattern: 'SUBMISSION#<submission_id>')",
+          "entity_type": "String ('SUBMISSION')",
+          "submission_id": "String",
+          "user_id": "String (GSI user-submissions-index HASH Key)",
+          "language": "String ('python' | 'javascript' | 'cpp' | ...)",
+          "code": "String",
+          "status": "String ('ACCEPTED' | 'WRONG_ANSWER' | 'TIME_LIMIT_EXCEEDED' | ...)",
+          "execution_time_ms": "Number",
+          "created_at": "String (ISO 8601 Timestamp - GSI user-submissions-index RANGE Key)"
+        }
+      },
+      "AccessPatterns": [
+        {
+          "id": "AP1",
+          "description": "Get problem metadata and embedded test cases",
+          "operation": "GetItem",
+          "key": {
+            "problem_id": "String",
+            "sk": "METADATA"
+          }
+        },
+        {
+          "id": "AP2",
+          "description": "Get all submissions for a problem",
+          "operation": "Query",
+          "key_condition": "problem_id = :pid AND begins_with(sk, 'SUBMISSION#')"
+        },
+        {
+          "id": "AP3",
+          "description": "Get all submissions by user_id across all problems (via GSI)",
+          "operation": "Query",
+          "index_name": "user-submissions-index",
+          "key_condition": "user_id = :uid"
+        },
+        {
+          "id": "AP4",
+          "description": "Filter problems by category and difficulty (via GSI)",
+          "operation": "Query",
+          "index_name": "category-difficulty-index",
+          "key_condition": "category = :cat AND difficulty = :diff"
+        }
+      ]
+    }
+  ]
+}
