@@ -78,11 +78,11 @@ describe("Judge0Executor.run — tích hợp thật (cần Judge0 đang chạy t
     expect(res.passed).toBe(true);
   });
 
-  it("báo COMPILE_ERROR với code Python sai cú pháp", async () => {
+  it("báo RUNTIME_ERROR với code Python sai cú pháp (Python không có pha compile riêng — SyntaxError là Runtime Error NZEC ở Judge0)", async () => {
     const executor = new Judge0Executor("http://127.0.0.1:2358");
     const res = await executor.run({
       language: "python", code: "def f(:\n  pass", stdin: "", signal: new AbortController().signal,
     });
-    expect(res.status).toBe("COMPILE_ERROR");
+    expect(res.status).toBe("RUNTIME_ERROR");
   });
 });

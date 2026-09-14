@@ -22,6 +22,11 @@ export function mapJudge0Result(body: Judge0SubmissionResult, expectedOutput?: s
   if (body.status.id === 6) return { status: "COMPILE_ERROR", stdout, stderr, timeMs };
   if (body.status.id === 5) return { status: "TIME_LIMIT", stdout, stderr, timeMs };
   if (body.status.id >= 7 && body.status.id <= 12) return { status: "RUNTIME_ERROR", stdout, stderr, timeMs };
+  if (body.status.id !== 3 && body.status.id !== 4) {
+    // Any other status id (1/2 in-progress, 13 Internal Error, 14 Exec Format Error,
+    // or an unrecognized future id) is not a genuine completion — never treat it as OK.
+    return { status: "EXECUTOR_UNAVAILABLE", stdout: "", stderr: "", timeMs: 0 };
+  }
   const passed = expectedOutput !== undefined ? body.status.id === 3 : undefined;
   return { status: "OK", stdout, stderr, timeMs, passed };
 }
@@ -51,7 +56,12 @@ export class Judge0Executor implements CodeExecutor {
       return { status: "EXECUTOR_UNAVAILABLE", stdout: "", stderr: "", timeMs: 0 };
     }
     if (!res.ok) return { status: "EXECUTOR_UNAVAILABLE", stdout: "", stderr: "", timeMs: 0 };
-    const body = (await res.json()) as Judge0SubmissionResult;
+    let body: Judge0SubmissionResult;
+    try {
+      body = (await res.json()) as Judge0SubmissionResult;
+    } catch {
+      return { status: "EXECUTOR_UNAVAILABLE", stdout: "", stderr: "", timeMs: 0 };
+    }
     return mapJudge0Result(body, req.expectedOutput);
   }
 }
