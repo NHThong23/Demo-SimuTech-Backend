@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { userRepository } from '@/repositories/user.repository';
-import { CreateUserInput, PublicUserProfile } from '@/entities';
+import { CreateUserInput, PublicUserProfile, UpdateUserProfileInput } from '@/entities';
 import { signToken } from '@/lib/jwt';
 
 export class AuthService {
@@ -80,6 +80,39 @@ export class AuthService {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { password, ...publicUser } = user;
     return publicUser;
+  }
+
+  async updateProfile(userId: number, input: UpdateUserProfileInput): Promise<PublicUserProfile> {
+    await userRepository.updateProfile(userId, input);
+    const updated = await this.getProfile(userId);
+    if (!updated) {
+      throw new Error('User not found');
+    }
+    return updated;
+  }
+
+  async changePassword(userId: number, oldPass: string, newPass: string): Promise<void> {
+    const user = await userRepository.findById(userId);
+    if (!user || !user.password) {
+      throw new Error('User not found');
+    }
+
+    const isValid = await bcrypt.compare(oldPass, user.password);
+    if (!isValid) {
+      throw new Error('Mật khẩu hiện tại không chính xác');
+    }
+
+    const hashed = await bcrypt.hash(newPass, 10);
+    await userRepository.updatePassword(userId, hashed);
+  }
+
+  async listAllUsers(): Promise<PublicUserProfile[]> {
+    const users = await userRepository.listAllUsers();
+    return users.map((u) => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { password, ...publicUser } = u;
+      return publicUser;
+    });
   }
 }
 

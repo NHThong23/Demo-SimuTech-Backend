@@ -90,6 +90,13 @@ export class UserRepository {
       [newTotal, newAvg, userId]
     );
   }
+  async updatePassword(id: number, hashedPassword: string): Promise<void> {
+    await execute('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, id]);
+  }
+
+  async listAllUsers(limit = 100): Promise<User[]> {
+    return query<User>('SELECT * FROM users ORDER BY created_at DESC LIMIT ?', [limit]);
+  }
 }
 
 export const userRepository = new UserRepository();

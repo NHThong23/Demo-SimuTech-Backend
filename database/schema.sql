@@ -44,9 +44,9 @@ CREATE TABLE `users` (
 -- Mật khẩu mẫu đã được băm bằng chuẩn Bcrypt (Mật khẩu gốc là: 'password123')
 -- =============================================================================
 INSERT INTO `users` (`id`, `username`, `email`, `password`, `full_name`, `role`, `skill_level`, `target_role`, `bio`, `total_interviews`, `avg_score`) VALUES
-(1, 'admin', 'admin@example.com', '$2b$10$EpRnTzVlqHNP0.fUbXUwSOyuiXe/QLSUG6xNekdHgTGmrpHEfIoxm',
+(1, 'admin', 'admin@example.com', '$2b$10$8eX0xmjXpbD/ehWX.rlrBO/IA5VZV8O2VVm6AWDTbz79dM21n2nLu',
     'System Administrator', 'ADMIN', 'SENIOR', NULL, 'Quản trị viên hệ thống', 0, 0.0),
-(2, 'student1', 'student1@example.com', '$2b$10$EpRnTzVlqHNP0.fUbXUwSOyuiXe/QLSUG6xNekdHgTGmrpHEfIoxm',
+(2, 'student1', 'student1@example.com', '$2b$10$8eX0xmjXpbD/ehWX.rlrBO/IA5VZV8O2VVm6AWDTbz79dM21n2nLu',
     'Nguyễn Văn A', 'CANDIDATE', 'JUNIOR', 'Backend Developer', 'Sinh viên CNTT năm 4, đang tìm kiếm vị trí Backend Developer', 2, 72.5);
 
 -- =============================================================================

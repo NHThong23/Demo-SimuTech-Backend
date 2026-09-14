@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { problemService } from '@/services/problem.service';
 import { problemRepository } from '@/repositories/problem.repository';
+import { getOptionalAuth } from '@/lib/auth-guard';
 import { apiError } from '@/lib/api-response';
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { problemId, sessionId, language, sourceCode } = body;
+
+    const authUser = getOptionalAuth(req);
+    const userId = authUser ? String(authUser.id) : (body.userId ? String(body.userId) : '2');
 
     const problem = await problemRepository.findById(problemId);
     const testCases = problem ? problem.test_cases : [
@@ -32,7 +36,7 @@ export async function POST(req: NextRequest) {
     const submission = await problemService.submitCode(
       {
         problem_id: problemId,
-        user_id: '2',
+        user_id: userId,
         language,
         code: sourceCode,
         interview_id: sessionId || null,

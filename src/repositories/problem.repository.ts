@@ -3,6 +3,7 @@ import {
   PutCommand,
   QueryCommand,
   ScanCommand,
+  DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { docClient } from '@/lib/db/dynamodb';
 import {
@@ -113,6 +114,33 @@ export class ProblemRepository {
 
     const response = await docClient.send(command);
     return (response.Items as Submission[]) || [];
+  }
+
+  async deleteProblem(problemId: string): Promise<void> {
+    const command = new DeleteCommand({
+      TableName: this.tableName,
+      Key: {
+        problem_id: problemId,
+        sk: PROBLEM_SK,
+      },
+    });
+    await docClient.send(command);
+  }
+
+  async updateProblem(problemId: string, updates: Partial<Problem>): Promise<Problem | null> {
+    const existing = await this.findById(problemId);
+    if (!existing) return null;
+
+    const updated: Problem = {
+      ...existing,
+      ...updates,
+      problem_id: problemId,
+      sk: PROBLEM_SK,
+      entity_type: 'PROBLEM',
+    };
+
+    await this.createProblem(updated);
+    return updated;
   }
 }
 

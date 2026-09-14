@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { interviewService } from '@/services/interview.service';
+import { getOptionalAuth } from '@/lib/auth-guard';
 import { apiError } from '@/lib/api-response';
 
 export async function POST(req: NextRequest) {
@@ -7,9 +8,15 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { targetRole = 'backend', seniorityLevel = 'junior', interviewType = 'coding', candidateName } = body;
 
-    // Use prob_1 (Two Sum) as default problem for coding mock interview if not specified
-    const problemId = 'prob_1';
-    const userId = candidateName ? `user_${candidateName.toLowerCase().replace(/\s+/g, '_')}` : '2';
+    // Detect authenticated user from JWT token if available
+    const authUser = getOptionalAuth(req);
+    const userId = authUser
+      ? String(authUser.id)
+      : candidateName
+      ? `user_${candidateName.toLowerCase().replace(/\s+/g, '_')}`
+      : '2';
+
+    const problemId = body.problemId || 'prob_1';
 
     const { session } = await interviewService.startInterview({
       user_id: userId,
