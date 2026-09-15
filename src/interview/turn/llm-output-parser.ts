@@ -5,8 +5,9 @@ const LlmTurnOutputSchema = z.object({
   action: z.enum(["speak", "listen", "next_stage", "end"]),
   reply: z.string(),
   note: z.string().nullable(),
-  revealed_constraints: z.array(z.number().int()).default([]),
-  covered_topics: z.array(z.number().int()).default([]),
+  // Model thật (vd. qua Ollama) đôi khi trả null thay vì [] khi không có gì để báo — coi 2 giá trị này tương đương.
+  revealed_constraints: z.array(z.number().int()).nullable().default([]).transform((v) => v ?? []),
+  covered_topics: z.array(z.number().int()).nullable().default([]).transform((v) => v ?? []),
 });
 
 export type ParseResult = { ok: true; value: LlmTurnOutput } | { ok: false; error: string };

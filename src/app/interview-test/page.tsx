@@ -1,6 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import "@excalidraw/excalidraw/index.css";
+import type { AppState, BinaryFiles } from "@excalidraw/excalidraw/types";
+import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
+import { excalidrawToWhiteboardState } from "./excalidraw-to-whiteboard";
+
+const Excalidraw = dynamic(() => import("@excalidraw/excalidraw").then((m) => m.Excalidraw), { ssr: false });
 
 interface ProblemView {
   problemId: string;
@@ -13,7 +20,6 @@ interface ProblemView {
 export default function InterviewTestPage() {
   const [problem, setProblem] = useState<ProblemView | null>(null);
   const [code, setCode] = useState("");
-  const [board, setBoard] = useState('{"nodes":[],"edges":[]}');
   const [log, setLog] = useState<string[]>([]);
   const [stageInfo, setStageInfo] = useState<string>("");
   const [evaluation, setEvaluation] = useState<unknown>(null);
@@ -24,6 +30,7 @@ export default function InterviewTestPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const recordingCtxRef = useRef<AudioContext | null>(null);
+  const whiteboardDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function appendLog(line: string): void {
     setLog((prev) => [...prev, line]);
@@ -146,14 +153,18 @@ export default function InterviewTestPage() {
     wsRef.current?.send(JSON.stringify({ type: "code.run" }));
   }
 
-  function sendBoard(): void {
-    try {
-      const data = JSON.parse(board);
+  function handleWhiteboardChange(elements: readonly ExcalidrawElement[], _appState: AppState, _files: BinaryFiles): void {
+    // Excalidraw gọi onChange trên từng thay đổi nhỏ (mỗi lần kéo chuột) — debounce để khỏi
+    // gửi whiteboard.update dồn dập qua WS trong lúc ứng viên còn đang vẽ dở 1 nét.
+    if (whiteboardDebounceRef.current) clearTimeout(whiteboardDebounceRef.current);
+    whiteboardDebounceRef.current = setTimeout(() => {
+      const data = excalidrawToWhiteboardState(elements);
       wsRef.current?.send(JSON.stringify({ type: "whiteboard.update", data }));
-      wsRef.current?.send(JSON.stringify({ type: "whiteboard.done" }));
-    } catch {
-      appendLog("Sơ đồ không phải JSON hợp lệ");
-    }
+    }, 400);
+  }
+
+  function sendBoardDone(): void {
+    wsRef.current?.send(JSON.stringify({ type: "whiteboard.done" }));
   }
 
   function doneStage(): void {
@@ -184,9 +195,11 @@ export default function InterviewTestPage() {
       <h3>Code</h3>
       <textarea value={code} onChange={(e) => sendCode(e.target.value)} rows={12} style={{ width: "100%", fontFamily: "monospace" }} />
 
-      <h3>Whiteboard (JSON dạng {"{"}"nodes":[...],"edges":[...]{"}"})</h3>
-      <textarea value={board} onChange={(e) => setBoard(e.target.value)} rows={4} style={{ width: "100%", fontFamily: "monospace" }} />
-      <button onClick={sendBoard}>Xong sơ đồ</button>
+      <h3>Whiteboard</h3>
+      <div style={{ height: 420, border: "1px solid #ccc" }}>
+        <Excalidraw onChange={handleWhiteboardChange} />
+      </div>
+      <button onClick={sendBoardDone}>Xong sơ đồ</button>
 
       <h3>Transcript</h3>
       <div style={{ background: "#f5f5f5", padding: 8, minHeight: 120, whiteSpace: "pre-wrap" }}>{log.join("\n")}</div>

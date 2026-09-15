@@ -46,4 +46,13 @@ describe("parseLlmOutput", () => {
       expect(result.value.covered_topics).toEqual([]);
     }
   });
+
+  it("coi revealed_constraints/covered_topics=null như mảng rỗng (model thật qua Ollama hay trả null thay vì [])", () => {
+    const result = parseLlmOutput('{"action":"speak","reply":"ok","note":null,"revealed_constraints":null,"covered_topics":null}');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.revealed_constraints).toEqual([]);
+      expect(result.value.covered_topics).toEqual([]);
+    }
+  });
 });

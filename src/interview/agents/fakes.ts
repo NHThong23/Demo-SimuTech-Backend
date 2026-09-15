@@ -45,7 +45,11 @@ export class FakeTtsAgent implements TtsAgent {
     // their message before this fake "finishes speaking" — a real TTS call always takes
     // non-trivial wall-clock time, this just makes the fake behave a bit more like it.
     await new Promise<void>((resolve) => setImmediate(resolve));
-    return Buffer.from(`FAKE_AUDIO:${text}`, "utf8");
+    // Must be valid PCM16 (even byte length) — a real WS client (see src/app/interview-test/page.tsx)
+    // decodes every binary frame as Int16Array and crashes on an odd length. A short silent clip
+    // (length scaled to the text so longer replies "speak" longer) satisfies that without needing
+    // a real TTS call; content doesn't matter since nothing asserts on it beyond length > 0.
+    return Buffer.alloc(Math.max(text.length, 1) * 2, 0);
   }
 }
 

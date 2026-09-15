@@ -2,6 +2,8 @@
 
 # dependencies
 /node_modules
+/infra/stt-whisper/vendor
+/infra/stt-whisper/__pycache__
 /.pnp
 .pnp.*
 .yarn/*
