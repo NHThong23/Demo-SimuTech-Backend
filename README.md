@@ -244,6 +244,256 @@ Response mẫu khi hệ thống kết nối thành công cả 2 database:
 
 ---
 
+## 🤖 Hướng Dẫn Tích Hợp Model AI
+
+Hệ thống áp dụng **Strategy Pattern** cho lớp AI — cho phép hoán đổi giữa các model (OpenAI, Gemini, Anthropic...) chỉ bằng cách thay đổi biến môi trường, **không cần sửa bất kỳ Service hay Route nào**.
+
+### Kiến Trúc AI Provider
+
+```
+src/services/ai/
+├── ai-provider.interface.ts   ← Interface IAIProvider (hợp đồng chung)
+├── mock-ai-provider.ts        ← MockAIProvider (đang dùng, không cần API key)
+├── ai-provider.factory.ts     ← Factory: chọn provider theo AI_PROVIDER env
+└── index.ts                   ← Barrel export
+```
+
+Luồng dữ liệu:
+
+```
+API Route → Service → aiProvider.generateResponse() → [Mock | OpenAI | Gemini | ...]
+                                    ↑
+                        Chọn bởi AI_PROVIDER env
+```
+
+---
+
+### Bước 1: Chuyển Đổi Provider Bằng Biến Môi Trường
+
+Mở file `.env` và thay đổi giá trị `AI_PROVIDER`:
+
+```env
+# Giá trị hiện tại (không cần API key, dùng để dev/demo):
+AI_PROVIDER=mock
+
+# Chuyển sang OpenAI:
+AI_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o          # hoặc gpt-4o-mini, gpt-3.5-turbo
+
+# Chuyển sang Google Gemini:
+AI_PROVIDER=gemini
+GEMINI_API_KEY=AIza...
+GEMINI_MODEL=gemini-1.5-pro  # hoặc gemini-1.5-flash
+
+# Chuyển sang Anthropic Claude:
+AI_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+```
+
+Sau khi đổi `.env`, **restart server** (`npm run dev`) là xong. Không cần sửa code.
+
+---
+
+### Bước 2: Implement Provider Mới (Khi Đã Chọn Model)
+
+Tạo file `src/services/ai/<model>-ai-provider.ts` implement interface `IAIProvider`:
+
+```typescript
+// Ví dụ: src/services/ai/openai-ai-provider.ts
+import OpenAI from 'openai';
+import type {
+  IAIProvider,
+  GenerateGreetingInput,
+  GenerateInterviewResponseInput,
+  GenerateInterviewResponseOutput,
+  EvaluateInterviewInput,
+  EvaluateInterviewOutput,
+  ReviewCodeInput,
+  EvaluateSystemDesignInput,
+  EvaluateSystemDesignOutput,
+} from './ai-provider.interface';
+
+export class OpenAIProvider implements IAIProvider {
+  private client: OpenAI;
+  private model: string;
+
+  constructor({ apiKey, model }: { apiKey: string; model: string }) {
+    this.client = new OpenAI({ apiKey });
+    this.model = model;
+  }
+
+  async generateGreeting(input: GenerateGreetingInput): Promise<string> {
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      messages: [
+        {
+          role: 'system',
+          content: 'Bạn là AI Interviewer chuyên nghiệp cho các buổi phỏng vấn kỹ thuật SE.',
+        },
+        {
+          role: 'user',
+          content: `Tạo lời chào mở đầu cho buổi phỏng vấn ${input.interviewType} với bài toán "${input.problemTitle}".`,
+        },
+      ],
+    });
+    return response.choices[0].message.content ?? '';
+  }
+
+  async generateInterviewResponse(
+    input: GenerateInterviewResponseInput
+  ): Promise<GenerateInterviewResponseOutput> {
+    const messages = [
+      {
+        role: 'system' as const,
+        content: `Bạn là AI Interviewer đang phỏng vấn về bài toán: ${input.problemContext.title}. 
+Độ khó: ${input.problemContext.difficulty}. Hãy phản hồi ngắn gọn, đặt câu hỏi gợi mở và hướng dẫn ứng viên tư duy.`,
+      },
+      // Map lịch sử hội thoại
+      ...input.conversationHistory.map((turn) => ({
+        role: turn.sender === 'AI' ? ('assistant' as const) : ('user' as const),
+        content: turn.content,
+      })),
+      { role: 'user' as const, content: input.userMessage },
+    ];
+
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      messages,
+    });
+
+    return {
+      content: response.choices[0].message.content ?? '',
+      messageType: 'FEEDBACK',
+    };
+  }
+
+  async evaluateInterview(input: EvaluateInterviewInput): Promise<EvaluateInterviewOutput> {
+    // Tổng hợp context và gọi AI chấm điểm
+    const transcript = input.messages
+      .map((m) => `${m.sender}: ${m.content}`)
+      .join('\n');
+
+    const latestCode = input.codeSnapshots[0]?.code ?? '(không có code)';
+
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Bạn là giám khảo phỏng vấn kỹ thuật. Chấm điểm và trả về JSON theo format:
+{
+  "scores": { "problem_solving": 0-100, "code_quality": 0-100, "communication": 0-100, "time_management": 0-100, "optimization": 0-100 },
+  "overall_score": 0-100,
+  "strengths": ["..."],
+  "weaknesses": ["..."],
+  "suggestions": ["..."],
+  "hire_recommendation": "STRONG_YES|LEAN_YES|LEAN_NO|STRONG_NO"
+}`,
+        },
+        {
+          role: 'user',
+          content: `Hội thoại phỏng vấn:\n${transcript}\n\nCode nộp cuối:\n\`\`\`\n${latestCode}\n\`\`\``,
+        },
+      ],
+    });
+
+    return JSON.parse(response.choices[0].message.content ?? '{}') as EvaluateInterviewOutput;
+  }
+
+  async reviewCode(input: ReviewCodeInput): Promise<string> {
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      messages: [
+        {
+          role: 'system',
+          content: 'Bạn là code reviewer. Đưa ra nhận xét ngắn gọn (2-3 câu) về chất lượng code.',
+        },
+        {
+          role: 'user',
+          content: `Bài: ${input.problemTitle}\nNgôn ngữ: ${input.language}\nCode:\n\`\`\`\n${input.code}\n\`\`\``,
+        },
+      ],
+    });
+    return response.choices[0].message.content ?? '';
+  }
+
+  async evaluateSystemDesign(
+    input: EvaluateSystemDesignInput
+  ): Promise<EvaluateSystemDesignOutput> {
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Phân tích kiến trúc system design và trả về JSON:
+{
+  "score": 0-100,
+  "scalabilityFeedback": "...",
+  "availabilityFeedback": "...",
+  "bottlenecks": [{ "componentId": "", "componentName": "", "severity": "low|medium|high|critical", "issue": "", "recommendation": "" }],
+  "suggestedAdditions": ["..."]
+}`,
+        },
+        {
+          role: 'user',
+          content: `Scenario: ${input.scenarioTitle}\nYêu cầu: ${input.requirementsPrompt}\nKiến trúc: ${JSON.stringify(input.architecture, null, 2)}`,
+        },
+      ],
+    });
+    return JSON.parse(response.choices[0].message.content ?? '{}') as EvaluateSystemDesignOutput;
+  }
+}
+```
+
+---
+
+### Bước 3: Đăng Ký Provider Trong Factory
+
+Mở [`src/services/ai/ai-provider.factory.ts`](./src/services/ai/ai-provider.factory.ts) và bỏ comment case tương ứng:
+
+```typescript
+case 'openai': {
+  const { OpenAIProvider } = require('./openai-ai-provider');
+  return new OpenAIProvider({
+    apiKey: process.env.OPENAI_API_KEY!,
+    model: process.env.OPENAI_MODEL || 'gpt-4o',
+  });
+}
+```
+
+### Bước 4: Cài Đặt SDK (Nếu Cần)
+
+```bash
+# OpenAI
+npm install openai
+
+# Google Gemini
+npm install @google/generative-ai
+
+# Anthropic
+npm install @anthropic-ai/sdk
+```
+
+---
+
+### Tóm Tắt Checklist Tích Hợp Model Mới
+
+- [ ] Tạo `src/services/ai/<model>-ai-provider.ts` implement `IAIProvider`
+- [ ] Cài đặt SDK của model (`npm install ...`)
+- [ ] Bỏ comment case trong `ai-provider.factory.ts`
+- [ ] Thêm API key vào `.env`
+- [ ] Đổi `AI_PROVIDER=<model>` trong `.env`
+- [ ] Restart server (`npm run dev`)
+- [ ] Chạy type-check: `npx tsc --noEmit`
+
+> **Lưu ý:** Tất cả Service và Route đã dùng `aiProvider` từ factory — không cần sửa bất kỳ file nào ngoài danh sách trên.
+
+---
+
 ## 🧪 Kiểm Tra Tính Toàn Vẹn Mã Nguồn (Type-Check)
 
 Dự án sử dụng TypeScript nghiêm ngặt. Để kiểm tra toàn bộ code trước khi commit/deploy:

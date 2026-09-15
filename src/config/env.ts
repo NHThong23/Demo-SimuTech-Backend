@@ -16,8 +16,15 @@ const envSchema = z.object({
   DYNAMODB_PROBLEMS_TABLE: z.string().default('Problems'),
   DYNAMODB_INTERVIEWS_TABLE: z.string().default('Interviews'),
 
-  // AI Service Config
+  // AI Provider Config
+  // Chuyển đổi model: đổi AI_PROVIDER và thêm API key tương ứng
+  AI_PROVIDER: z.enum(['mock', 'openai', 'gemini', 'anthropic']).default('mock'),
   OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MODEL: z.string().default('gpt-4o'),
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default('gemini-1.5-pro'),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().default('claude-3-5-sonnet-20241022'),
 
   // JWT / Auth Config
   JWT_SECRET: z.string().default(process.env.NEXTAUTH_SECRET || 'simutech_jwt_secret_dev_key_2026'),
